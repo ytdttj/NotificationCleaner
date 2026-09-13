@@ -9,10 +9,17 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import cc.ytdttj.noticleaner.R
-import kotlinx.coroutines.flow.first
+import cc.ytdttj.noticleaner.ServiceLocator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 
 /**
- * T0 保活前台服务（Plan.md §7.1）：START_STICKY 常驻，低优先级通知仅显示统计占位。
+ * T0 保活前台服务（Plan.md §7.1）：START_STICKY 常驻，低优先级通知显示累计拦截统计。
+ * 1.1.5：内容为「已拦截 AI X 条 · 规则 Y 条」，随拦截实时刷新（DataStore 持久计数）。
  * specialUse 类型（API 34+ 声明 PROPERTY_SPECIAL_USE_FGS_SUBTYPE）。
  */
 class KeepAliveService : Service() {
@@ -28,6 +35,8 @@ class KeepAliveService : Service() {
         }
     }
 
+    private var scope: CoroutineScope? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -42,6 +51,36 @@ class KeepAliveService : Service() {
                 ),
             )
         }
+
+        // 初始进入前台（必须先 startForeground，再由统计流刷新内容）
+        runCatching { startForeground(NOTIF_ID, buildNotification(0, 0)) }
+
+        // 累计拦截统计：DataStore 计数变化（AI / 规则）→ 实时刷新常驻通知
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { s ->
+            s.launch {
+                combine(
+                    ServiceLocator.settings.filteredAiCount,
+                    ServiceLocator.settings.filteredRuleCount,
+                ) { a, r -> a to r }
+                    .collect { (a, r) ->
+                        runCatching {
+                            getSystemService(NotificationManager::class.java)
+                                .notify(NOTIF_ID, buildNotification(a, r))
+                        }
+                    }
+            }
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+    override fun onDestroy() {
+        scope?.cancel()
+        scope = null
+        super.onDestroy()
+    }
+
+    private fun buildNotification(aiCount: Int, ruleCount: Int): Notification {
         val contentIntent = android.app.PendingIntent.getActivity(
             this,
             0,
@@ -53,28 +92,25 @@ class KeepAliveService : Service() {
                 ),
             android.app.PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification: Notification =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle(getString(R.string.app_name))
-                    .setContentText("通知过滤运行中，点击打开")
-                    .setSmallIcon(android.R.drawable.ic_delete)
-                    .setContentIntent(contentIntent)
-                    .setOngoing(true)
-                    .build()
-            } else {
-                @Suppress("DEPRECATION")
-                Notification.Builder(this)
-                    .setContentTitle(getString(R.string.app_name))
-                    .setContentText("通知过滤运行中，点击打开")
-                    .setSmallIcon(android.R.drawable.ic_delete)
-                    .setContentIntent(contentIntent)
-                    .setPriority(Notification.PRIORITY_MIN)
-                    .setOngoing(true)
-                    .build()
-            }
-        runCatching { startForeground(NOTIF_ID, notification) }
+        val text = "已拦截 AI $aiCount 条 · 规则 $ruleCount 条"
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_delete)
+                .setContentIntent(contentIntent)
+                .setOngoing(true)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_delete)
+                .setContentIntent(contentIntent)
+                .setPriority(Notification.PRIORITY_MIN)
+                .setOngoing(true)
+                .build()
+        }
     }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 }

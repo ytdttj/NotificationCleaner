@@ -1,7 +1,7 @@
 {
-    "sha256":  "0ee014800d087d7a9f30255ac5424a581dd3aeb4a594c7cc3f07e20d79942315",
-    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.4/NotiCleaner-1.1.4.apk",
-    "versionCode":  12,
-    "versionName":  "1.1.4",
-    "notes":  "修复更新检查失败：显式 UA + 手动跟随重定向；失败原因已记录日志"
+    "sha256":  "17cd292580502ad2d5d09d4cc2a6a47f17f7b53d7f1efff5ef0e94f16f6f76ae",
+    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.5/NotiCleaner-1.1.5.apk",
+    "versionCode":  13,
+    "versionName":  "1.1.5",
+    "notes":  "常驻通知显示累计拦截数量（AI 拦截 / 用户规则拦截），实时刷新"
 }

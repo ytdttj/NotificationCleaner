@@ -209,6 +209,7 @@ class CleanerListenerService : NotificationListenerService() {
                     expireAt = postTime + EXPIRE_MS,
                 ),
             )
+            countFiltered(decision, existing.decision)
             return
         }
         // 60 秒内同 App + 同标题 + 同内容的重复推送：不再重复入库
@@ -230,6 +231,16 @@ class CleanerListenerService : NotificationListenerService() {
                 key = sbn.key,
             ),
         )
+        countFiltered(decision, null)
+    }
+
+    /** 累计拦截计数（1.1.5，常驻通知展示）：仅在新拦截时 +1，同槽位重复更新不重复计数 */
+    private suspend fun countFiltered(decision: String, previous: String?) {
+        val isAi = decision == DECISION_FILTERED_BY_AI
+        val isRule = decision == DECISION_FILTERED_BY_RULE
+        if (!isAi && !isRule) return
+        if (previous == decision) return
+        runCatching { ServiceLocator.settings.incrementFiltered(ai = isAi) }
     }
 
     private fun appLabel(pkg: String): String = runCatching {
