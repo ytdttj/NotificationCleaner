@@ -1,6 +1,7 @@
 package cc.ytdttj.noticleaner.ui.history
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -157,38 +158,35 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
     }
 }
 
-/** APP 图标：全局 LruCache 缓存；mutate 后绘制避免状态污染；失败时圆底 + 首字符占位 */
-private val iconCache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(128)
+/** APP 图标：密度感知像素尺寸 + 全局 LruCache（键含尺寸）；自适应图标裁剪安全区；失败时圆底 + 首字符占位 */
+private val iconCache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(192)
 
 @Composable
 fun AppIcon(packageName: String, size: Int = 40, fallbackText: String = packageName) {
     val context = LocalContext.current
-    val bmp = remember(packageName) {
-        iconCache.get(packageName) ?: run {
-            val bitmap = runCatching {
-                val d = context.packageManager.getApplicationIcon(packageName).mutate()
-                val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
-                val canvas = android.graphics.Canvas(bmp)
-                d.setBounds(0, 0, size, size)
-                d.draw(canvas)
-                bmp.asImageBitmap()
-            }.getOrNull()
-            bitmap?.also { iconCache.put(packageName, it) }
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    // 1.1.7：按屏幕密度生成物理像素位图，避免 40px 位图在 3x 屏上被拉伸导致模糊
+    val sizePx = (size * density).toInt().coerceAtLeast(8)
+    val bmp = remember(packageName, sizePx) {
+        val cacheKey = "$packageName:$sizePx"
+        iconCache.get(cacheKey) ?: run {
+            renderAppIcon(context, packageName, sizePx)?.also { iconCache.put(cacheKey, it) }
         }
     }
     if (bmp != null) {
         androidx.compose.foundation.Image(
             bitmap = bmp,
             contentDescription = null,
-            modifier = Modifier.width(size.dp).height(size.dp),
+            modifier = Modifier.width(size.dp).height(size.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(size.dp / 4)),
         )
     } else {
-        // 占位：浅色圆底 + APP 名首字符（避免"图标显示不出来"的观感）
+        // 占位：浅色圆底 + APP 名首字符（1.1.7：补背景色，避免孤零零一个字母的观感）
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
                 .width(size.dp)
                 .height(size.dp)
-                .clip(androidx.compose.foundation.shape.CircleShape),
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -199,6 +197,44 @@ fun AppIcon(packageName: String, size: Int = 40, fallbackText: String = packageN
         }
     }
 }
+
+/**
+ * drawable → 位图（1.1.7 重写）：
+ * - 自适应图标（AdaptiveIconDrawable）：108 视口中心 72 安全区放大到目标尺寸（启动器同款），
+ *   修复此前整幅视口塞进 bounds 导致图标偏小、四周带底色的问题
+ * - 其余 drawable：按边界绘制
+ * - 统一圆角裁剪，与占位风格一致
+ */
+private fun renderAppIcon(
+    context: android.content.Context,
+    packageName: String,
+    sizePx: Int,
+): androidx.compose.ui.graphics.ImageBitmap? = runCatching {
+    val d = context.packageManager.getApplicationIcon(packageName).mutate()
+    val bmp = android.graphics.Bitmap.createBitmap(sizePx, sizePx, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bmp)
+    // 圆角裁剪（先于任何缩放变换，作用于整个位图）
+    canvas.clipPath(
+        android.graphics.Path().apply {
+            addRoundRect(
+                android.graphics.RectF(0f, 0f, sizePx.toFloat(), sizePx.toFloat()),
+                sizePx / 4f, sizePx / 4f,
+                android.graphics.Path.Direction.CW,
+            )
+        },
+    )
+    if (d is android.graphics.drawable.AdaptiveIconDrawable) {
+        // 安全区 [18,90] 映射到 [0,sizePx]：p' = (p-18) * (sizePx/72)
+        val scale = sizePx / 72f
+        canvas.scale(scale, scale)
+        canvas.translate(-18f, -18f)
+        d.setBounds(0, 0, 108, 108)
+    } else {
+        d.setBounds(0, 0, sizePx, sizePx)
+    }
+    d.draw(canvas)
+    bmp.asImageBitmap()
+}.getOrNull()
 
 @Composable
 private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
