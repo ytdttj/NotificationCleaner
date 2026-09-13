@@ -14,8 +14,8 @@ android {
         applicationId = "cc.ytdttj.noticleaner"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "1.1.2"
+        versionCode = 11
+        versionName = "1.1.3"
     }
 
     buildTypes {
@@ -38,11 +38,11 @@ android {
     defaultConfig {
         // 应用内更新候选源（latest.json），顺序 = 检查与下载优先级：GitHub → Gitee
         buildConfigField("String", "UPDATE_LATEST_GITHUB",
-            "\"https://raw.githubusercontent.com/ytdttj/Notification-Cleaner/main/latest.json\"")
+            "\"https://raw.githubusercontent.com/ytdttj/NotificationCleaner/main/latest.json\"")
         buildConfigField("String", "UPDATE_LATEST_GITEE",
             "\"https://gitee.com/ytdttj/NotiCleaner/raw/main/latest.json\"")
         buildConfigField("String", "UPDATE_APK_GITHUB",
-            "\"https://github.com/ytdttj/Notification-Cleaner/raw/main/\"")
+            "\"https://github.com/ytdttj/NotificationCleaner/raw/main/\"")
         buildConfigField("String", "UPDATE_APK_GITEE",
             "\"https://gitee.com/ytdttj/NotiCleaner/raw/main/\"")
     }
