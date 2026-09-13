@@ -161,7 +161,9 @@ class UpdateViewModel : ViewModel() {
             try {
                 when (conn.responseCode) {
                     in 200..299 -> {
+                        // 剥离可能的 UTF-8 BOM，kotlinx.serialization 不容忍 BOM
                         val body = conn.inputStream.bufferedReader().use { it.readText() }
+                            .trimStart('\uFEFF')
                         return json.decodeFromString<LatestRelease>(body)
                     }
                     in 300..399 -> {
