@@ -79,15 +79,15 @@ class UpdateViewModel : ViewModel() {
         }
     }
 
-    /** 下载 APK：GitHub → Gitee 候选直链依次尝试（latest.json 的 url 作为最后兜底） */
+    /** 下载 APK：GitHub → Gitee 的 Release 附件依次尝试（latest.json 的 url 作为最后兜底） */
     fun startDownload(release: LatestRelease) {
         downloadJob?.cancel()
         val appCtx = cc.ytdttj.noticleaner.ServiceLocator.appContext
         val apkName = "NotiCleaner-${release.versionName}.apk"
         val candidates = buildList {
-            add(BuildConfig.UPDATE_APK_GITHUB + apkName)
-            add(BuildConfig.UPDATE_APK_GITEE + apkName)
-            if (release.url.isNotBlank()) add(release.url)
+            add(BuildConfig.UPDATE_APK_GITHUB + "/v" + release.versionName + "/" + apkName)
+            add(BuildConfig.UPDATE_APK_GITEE + "/v" + release.versionName + "/" + apkName)
+            if (release.url.isNotBlank() && release.url.startsWith("http")) add(release.url)
         }
         _state.value = UpdateState.Downloading(release, 0)
         downloadJob = viewModelScope.launch {

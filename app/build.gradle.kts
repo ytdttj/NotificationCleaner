@@ -42,9 +42,9 @@ android {
         buildConfigField("String", "UPDATE_LATEST_GITEE",
             "\"https://gitee.com/ytdttj/NotiCleaner/raw/main/latest.json\"")
         buildConfigField("String", "UPDATE_APK_GITHUB",
-            "\"https://github.com/ytdttj/NotificationCleaner/raw/main/\"")
+            "\"https://github.com/ytdttj/NotificationCleaner/releases/download\"")
         buildConfigField("String", "UPDATE_APK_GITEE",
-            "\"https://gitee.com/ytdttj/NotiCleaner/raw/main/\"")
+            "\"https://gitee.com/ytdttj/NotiCleaner/releases/download\"")
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false

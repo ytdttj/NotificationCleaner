@@ -16,8 +16,10 @@ captures/
 *.iml
 .vscode/
 
-# ==== 分发产物（APK 由手动上传到仓库根目录，不随源码提交） ====
+# ==== 分发产物（APK 只放 Release 附件，不随源码提交） ====
 dist/
+/*.apk
+*.idsig
 
 # ==== 参考仓库（Notice 克隆，仅本地学习用） ====
 ref/
