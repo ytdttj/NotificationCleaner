@@ -1,0 +1,7 @@
+﻿{
+    "sha256":  "d6ed67a060af5a8773e5b6d8d5499550a7dfcf6797735eaa3cb3be5ac121354e",
+    "url":  "NotiCleaner-1.1.2.apk",
+    "versionCode":  10,
+    "versionName":  "1.1.2",
+    "notes":  "新增应用内更新（GitHub→Gitee 多源）；过滤阈值保存按钮生效机制"
+}
