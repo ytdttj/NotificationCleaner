@@ -1,0 +1,298 @@
+package cc.ytdttj.noticleaner.ui.history
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Badge
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import cc.ytdttj.noticleaner.ServiceLocator
+import cc.ytdttj.noticleaner.data.db.DECISION_CONVERSATION
+import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI
+import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_RULE
+import cc.ytdttj.noticleaner.data.db.DECISION_MANUAL_MARKED_AD
+import cc.ytdttj.noticleaner.data.db.DECISION_MEDIA
+import cc.ytdttj.noticleaner.data.db.DECISION_ONGOING
+import cc.ytdttj.noticleaner.data.db.DECISION_WHITELIST
+import cc.ytdttj.noticleaner.data.db.NotificationEntity
+import cc.ytdttj.noticleaner.notify.KeepAliveManager
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+private val timeFmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
+    val list by vm.list.collectAsState()
+    val filter by vm.filter.collectAsState()
+    val search by vm.search.collectAsState()
+    val selected by vm.selected.collectAsState()
+    val toast by vm.toast.collectAsState()
+    val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    var hadData by remember { mutableStateOf(false) }
+
+    // 修复：打开页面/切换筛选/首次加载后定位到最新通知（列表顶部）
+    LaunchedEffect(list.isEmpty(), filter) {
+        if (list.isNotEmpty() && !hadData) {
+            listState.scrollToItem(0)
+        }
+        hadData = list.isNotEmpty()
+    }
+
+    LaunchedEffect(toast) {
+        toast?.let {
+            snackbar.showSnackbar(it)
+            vm.clearToast()
+        }
+    }
+
+    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                HistoryFilter.entries.forEach { f ->
+                    FilterChip(
+                        selected = filter == f,
+                        onClick = { vm.setFilter(f) },
+                        label = {
+                            Text(
+                                when (f) {
+                                    HistoryFilter.ALL -> "全部"
+                                    HistoryFilter.FILTERED -> "已过滤"
+                                    HistoryFilter.PASSED -> "正常"
+                                },
+                            )
+                        },
+                    )
+                }
+            }
+            androidx.compose.material3.OutlinedTextField(
+                value = search,
+                onValueChange = { vm.search.value = it },
+                placeholder = { Text("搜索 App / 标题 / 内容") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(56.dp),
+            )
+            Spacer(Modifier.height(4.dp))
+            if (list.isEmpty()) {
+                Column(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(if (search.isBlank()) "暂无通知记录" else "无匹配结果", style = MaterialTheme.typography.titleMedium)
+                    if (search.isBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("请先在系统设置中授予通知监听权限", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                ) {
+                    items(list, key = { it.id }) { n ->
+                        NotificationCard(n) { vm.select(n) }
+                    }
+                }
+            }
+        }
+
+        selected?.let { n ->
+            ModalBottomSheet(onDismissRequest = { vm.select(null) }) {
+                NotificationDetail(
+                    n = n,
+                    onJumpChannel = {
+                        KeepAliveManager.openChannelSettings(context, n.packageName, n.channelId)
+                    },
+                    onLearn = { label -> vm.learn(n, label) },
+                    onUnlearn = { vm.unlearn(n) },
+                )
+            }
+        }
+    }
+}
+
+/** APP 图标：全局 LruCache 缓存；mutate 后绘制避免状态污染；失败时圆底 + 首字符占位 */
+private val iconCache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(128)
+
+@Composable
+fun AppIcon(packageName: String, size: Int = 40, fallbackText: String = packageName) {
+    val context = LocalContext.current
+    val bmp = remember(packageName) {
+        iconCache.get(packageName) ?: run {
+            val bitmap = runCatching {
+                val d = context.packageManager.getApplicationIcon(packageName).mutate()
+                val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bmp)
+                d.setBounds(0, 0, size, size)
+                d.draw(canvas)
+                bmp.asImageBitmap()
+            }.getOrNull()
+            bitmap?.also { iconCache.put(packageName, it) }
+        }
+    }
+    if (bmp != null) {
+        androidx.compose.foundation.Image(
+            bitmap = bmp,
+            contentDescription = null,
+            modifier = Modifier.width(size.dp).height(size.dp),
+        )
+    } else {
+        // 占位：浅色圆底 + APP 名首字符（避免"图标显示不出来"的观感）
+        androidx.compose.foundation.layout.Box(
+            modifier = Modifier
+                .width(size.dp)
+                .height(size.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                fallbackText.take(1).uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
+        Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            AppIcon(n.packageName, 40, fallbackText = n.appName)
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(n.appName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text(timeFmt.format(Date(n.postTime)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Spacer(Modifier.weight(1f))
+                    when (n.decision) {
+                        DECISION_FILTERED_BY_AI -> Badge { Text("AI过滤 ${(n.adProbability * 100).toInt()}%") }
+                        DECISION_FILTERED_BY_RULE -> Badge { Text("规则过滤") }
+                        DECISION_MANUAL_MARKED_AD -> Badge { Text("已学习广告") }
+                        DECISION_WHITELIST -> Text("白名单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        DECISION_MEDIA -> Text("媒体", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                        DECISION_CONVERSATION -> Text("会话", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                        DECISION_ONGOING -> Text("常驻", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                    }
+                    if (n.learned) {
+                        Spacer(Modifier.width(4.dp))
+                        Text("已学习", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                    }
+                }
+                if (n.title.isNotEmpty()) {
+                    Text(n.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (n.content.isNotEmpty()) {
+                    Text(n.content, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                // 右下角：简单广告率（按阈值区间着色）
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val pct = (n.adProbability * 100).toInt()
+                    Text(
+                        "广告率 $pct%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when {
+                            n.adProbability >= 0.8f -> MaterialTheme.colorScheme.error
+                            n.adProbability >= 0.5f -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.outline
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationDetail(
+    n: NotificationEntity,
+    onJumpChannel: () -> Unit,
+    onLearn: (Int) -> Unit,
+    onUnlearn: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+        if (n.title.isNotEmpty()) {
+            Text(n.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(n.content.ifEmpty { "（无正文）" }, style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(12.dp))
+        Text("发送时间：${timeFmt.format(Date(n.postTime))}", style = MaterialTheme.typography.bodySmall)
+        Text("APP：${n.appName} (${n.packageName})", style = MaterialTheme.typography.bodySmall)
+        Text("发送通道：${n.channelId.ifEmpty { "（默认/未知）" }}", style = MaterialTheme.typography.bodySmall)
+        Text("AI 判定：广告概率 ${(n.adProbability * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onJumpChannel, Modifier.fillMaxWidth()) {
+            Text("跳转到该通道设置")
+        }
+        Spacer(Modifier.height(8.dp))
+        if (n.learned) {
+            AssistChip(onClick = onUnlearn, label = { Text("取消学习") })
+        } else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onLearn(1) }, Modifier.weight(1f)) { Text("广告通知") }
+                OutlinedButton(onClick = { onLearn(0) }, Modifier.weight(1f)) { Text("正常通知") }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+internal fun vmFactory(): androidx.lifecycle.ViewModelProvider.Factory =
+    androidx.lifecycle.viewmodel.viewModelFactory {
+        initializer {
+            HistoryViewModel(ServiceLocator.db.notificationDao(), ServiceLocator.modelRepo)
+        }
+    }

@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">通知净化器</string>
+    <string name="service_label">通知净化服务</string>
+    <string name="keepalive_channel">保活服务</string>
+</resources>

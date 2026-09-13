@@ -1,0 +1,39 @@
+# ==== Gradle 构建缓存与产物 ====
+.gradle/
+build/
+app/build/
+
+# ==== Kotlin 编译缓存 ====
+.kotlin/
+
+# ==== Android 本地配置（含 SDK 路径，因机器而异） ====
+local.properties
+captures/
+.cxx/
+
+# ==== IDE ====
+.idea/
+*.iml
+.vscode/
+
+# ==== 分发产物（APK 由手动上传到仓库根目录，不随源码提交） ====
+dist/
+
+# ==== 参考仓库（Notice 克隆，仅本地学习用） ====
+ref/
+
+# ==== 训练相关：数据集与生成产物（脚本 train.py 保留上传） ====
+training/data/
+training/model_out/
+
+# ==== 个人隐私数据（真实通知记录） ====
+通知滤盒_*.csv
+
+# ==== 系统与日志 ====
+*.log
+.DS_Store
+Thumbs.db
+
+# 开发计划
+Plan.md
+UpgradePlan.md
