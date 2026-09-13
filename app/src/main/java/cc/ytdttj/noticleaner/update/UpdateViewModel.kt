@@ -144,20 +144,41 @@ class UpdateViewModel : ViewModel() {
 
     // ---- 内部实现 ----
 
+    /**
+     * 拉取 latest.json：
+     * - 显式 UA（部分 CDN 拒绝 Dalvik 默认 UA）
+     * - 手动跟随 3xx（跨域重定向不依赖系统实现）
+     * - 失败原因写入 logcat（tag UpdateVM）
+     */
     private fun fetchJson(urlStr: String): LatestRelease? = runCatching {
-        val conn = URL(urlStr).openConnection() as HttpURLConnection
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 10_000
-        conn.instanceFollowRedirects = true
-        try {
-            val body = if (conn.responseCode in 200..299) {
-                conn.inputStream.bufferedReader().use { it.readText() }
-            } else null
-            body?.let { json.decodeFromString<LatestRelease>(it) }
-        } finally {
-            conn.disconnect()
+        var url = urlStr
+        repeat(5) {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
+            conn.instanceFollowRedirects = false
+            conn.setRequestProperty("User-Agent", "NotiCleaner/${BuildConfig.VERSION_NAME}")
+            try {
+                when (conn.responseCode) {
+                    in 200..299 -> {
+                        val body = conn.inputStream.bufferedReader().use { it.readText() }
+                        return json.decodeFromString<LatestRelease>(body)
+                    }
+                    in 300..399 -> {
+                        val loc = conn.getHeaderField("Location") ?: return null
+                        url = loc
+                    }
+                    else -> {
+                        android.util.Log.w("UpdateVM", "HTTP ${conn.responseCode} for $url")
+                        return null
+                    }
+                }
+            } finally {
+                conn.disconnect()
+            }
         }
-    }.getOrNull()
+        null
+    }.onFailure { android.util.Log.w("UpdateVM", "fetch failed for $urlStr", it) }.getOrNull()
 
     private fun enqueue(dm: DownloadManager, url: String, apkName: String): Long? = runCatching {
         val req = DownloadManager.Request(Uri.parse(url))
