@@ -1,7 +1,7 @@
 {
-    "sha256":  "17cd292580502ad2d5d09d4cc2a6a47f17f7b53d7f1efff5ef0e94f16f6f76ae",
-    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.5/NotiCleaner-1.1.5.apk",
-    "versionCode":  13,
-    "versionName":  "1.1.5",
-    "notes":  "常驻通知显示累计拦截数量（AI 拦截 / 用户规则拦截），实时刷新"
+    "sha256":  "56d1c88b7d75e5f4bf997438899b27ed3f4e27cba5855cc09b1065e0305732a3",
+    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.6/NotiCleaner-1.1.6.apk",
+    "versionCode":  14,
+    "versionName":  "1.1.6",
+    "notes":  "修复历史通知重复（按通知槽位去重+防并发）；下载失败原因与 sha256 校验日志"
 }

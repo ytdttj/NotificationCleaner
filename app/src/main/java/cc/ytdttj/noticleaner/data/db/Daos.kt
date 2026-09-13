@@ -34,12 +34,9 @@ interface NotificationDao {
     @Query("SELECT * FROM notifications WHERE id = :id")
     suspend fun getById(id: Long): NotificationEntity?
 
-    /** 同一通知槽位（sbn.key）且内容一致 → 视为同一条通知的更新 */
-    @Query(
-        "SELECT * FROM notifications WHERE `key` = :key AND title = :title AND content = :content " +
-            "ORDER BY id DESC LIMIT 1",
-    )
-    suspend fun findByKeyContent(key: String, title: String, content: String): NotificationEntity?
+    /** 同一通知槽位（sbn.key）→ 视为同一条通知，内容更新就地覆盖（1.1.6：不再按内容拆行） */
+    @Query("SELECT * FROM notifications WHERE `key` = :key ORDER BY id DESC LIMIT 1")
+    suspend fun findByKey(key: String): NotificationEntity?
 
     /** 60 秒内同 App + 同标题 + 同内容 → 重复推送，不重复入库 */
     @Query(

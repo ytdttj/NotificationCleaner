@@ -22,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
 
 /**
@@ -59,6 +60,9 @@ class CleanerListenerService : NotificationListenerService() {
             private set
 
         private val appNameCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        /** 入库互斥：并发 onNotificationPosted 处理时防止查重-插入竞态双插 */
+        private val insertMutex = kotlinx.coroutines.sync.Mutex()
 
         @Volatile
         private var appScope: CoroutineScope? = null
@@ -197,41 +201,45 @@ class CleanerListenerService : NotificationListenerService() {
             runCatching { cancelNotification(sbn.key) }
         }
 
-        // ---- 入库（1.0.7 去重）----
-        // 同一通知槽位（key）且内容一致 → 系统对同一条通知的更新：更新原行，不重复插入
-        val existing = dao.findByKeyContent(sbn.key, title, content)
-        if (existing != null) {
-            dao.update(
-                existing.copy(
+        // ---- 入库（1.1.6：按槽位 key 去重 + 互斥，防并发双插）----
+        insertMutex.withLock {
+            // 同一通知槽位（sbn.key）= 通知栏同一条通知：内容更新就地覆盖，不拆新行
+            val existing = dao.findByKey(sbn.key)
+            if (existing != null) {
+                dao.update(
+                    existing.copy(
+                        title = title,
+                        content = content,
+                        postTime = postTime,
+                        adProbability = probability,
+                        decision = decision,
+                        expireAt = postTime + EXPIRE_MS,
+                    ),
+                )
+                countFiltered(decision, existing.decision)
+                return
+            }
+            // 60 秒内同 App + 同标题 + 同内容、不同槽位的重复推送：不再重复入库
+            val dup = dao.findRecentDuplicate(pkg, title, content, postTime - DEDUP_WINDOW_MS)
+            if (dup != null) return
+
+            dao.insert(
+                NotificationEntity(
+                    packageName = pkg,
+                    appName = appName,
+                    channelId = channel,
+                    channelName = channel,
+                    title = title,
+                    content = content,
                     postTime = postTime,
                     adProbability = probability,
                     decision = decision,
                     expireAt = postTime + EXPIRE_MS,
+                    key = sbn.key,
                 ),
             )
-            countFiltered(decision, existing.decision)
-            return
+            countFiltered(decision, null)
         }
-        // 60 秒内同 App + 同标题 + 同内容的重复推送：不再重复入库
-        val dup = dao.findRecentDuplicate(pkg, title, content, postTime - DEDUP_WINDOW_MS)
-        if (dup != null) return
-
-        dao.insert(
-            NotificationEntity(
-                packageName = pkg,
-                appName = appName,
-                channelId = channel,
-                channelName = channel,
-                title = title,
-                content = content,
-                postTime = postTime,
-                adProbability = probability,
-                decision = decision,
-                expireAt = postTime + EXPIRE_MS,
-                key = sbn.key,
-            ),
-        )
-        countFiltered(decision, null)
     }
 
     /** 累计拦截计数（1.1.5，常驻通知展示）：仅在新拦截时 +1，同槽位重复更新不重复计数 */

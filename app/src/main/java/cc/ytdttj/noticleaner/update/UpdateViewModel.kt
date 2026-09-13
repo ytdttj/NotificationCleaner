@@ -98,10 +98,11 @@ class UpdateViewModel : ViewModel() {
                 val ok = awaitDownload(dm, id)
                 if (ok) {
                     val file = File(appCtx.getExternalFilesDir(null), "update/$apkName")
-                    if (file.exists() && file.length() > 0) {
+                    if (file.exists() && file.length() > 0 && sha256Matches(file, release.sha256)) {
                         _state.value = UpdateState.ReadyToInstall(release, file)
                         return@launch
                     }
+                    if (file.exists()) android.util.Log.w("UpdateVM", "downloaded but sha256 mismatch or empty: $apkName")
                 }
                 // 该源失败：删除残留记录，切换下一个候选
                 runCatching { dm.remove(id) }
@@ -187,6 +188,7 @@ class UpdateViewModel : ViewModel() {
             .setTitle("NotiCleaner 更新包")
             .setDescription("正在下载 $apkName")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN)
+            .addRequestHeader("User-Agent", "NotiCleaner/${BuildConfig.VERSION_NAME}")
             .setDestinationInExternalFilesDir(
                 cc.ytdttj.noticleaner.ServiceLocator.appContext, null, "update/$apkName",
             )
@@ -202,7 +204,12 @@ class UpdateViewModel : ViewModel() {
                     val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
                     when (status) {
                         DownloadManager.STATUS_SUCCESSFUL -> return true
-                        DownloadManager.STATUS_FAILED -> return false
+                        DownloadManager.STATUS_FAILED -> {
+                            // 记录具体失败原因（如 HTTP 404/403、网络不可达等），便于远程诊断
+                            val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                            android.util.Log.w("UpdateVM", "download failed id=$id reason=$reason")
+                            return false
+                        }
                         else -> {
                             val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
                             val done = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
@@ -219,6 +226,25 @@ class UpdateViewModel : ViewModel() {
             delay(500)
         }
         return false
+    }
+
+    /** 校验下载 APK 的 sha256（latest.json 未提供或空串时跳过） */
+    private fun sha256Matches(file: File, expected: String?): Boolean {
+        if (expected.isNullOrBlank()) return true
+        return runCatching {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buf = ByteArray(1 shl 16)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) } == expected.lowercase()
+        }.onFailure {
+            android.util.Log.w("UpdateVM", "sha256 verify error", it)
+        }.getOrDefault(false)
     }
 
     override fun onCleared() {
