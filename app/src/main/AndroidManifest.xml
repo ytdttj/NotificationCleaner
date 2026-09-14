@@ -42,7 +42,7 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- LSPosed 模块声明（作用域：系统 android） -->
+        <!-- LSPosed 模块声明（作用域：系统 android）；minversion 100 = 需支持 libxposed 新 API 的框架 -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
@@ -51,7 +51,7 @@
             android:value="通知净化器后台保活：阻止系统停止本应用的通知监听服务" />
         <meta-data
             android:name="xposedminversion"
-            android:value="93" />
+            android:value="100" />
         <meta-data
             android:name="xposedscope"
             android:resource="@array/xposed_scope" />

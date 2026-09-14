@@ -14,8 +14,8 @@ android {
         applicationId = "cc.ytdttj.noticleaner"
         minSdk = 26
         targetSdk = 36
-        versionCode = 18
-        versionName = "1.1.10"
+        versionCode = 19
+        versionName = "1.1.11"
     }
 
     buildTypes {
@@ -78,8 +78,9 @@ dependencies {
     // Shizuku（用户主动启用时才请求授权）
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
-    // Xposed API：仅编译期 stub，运行时由 LSPosed 提供（不打入 APK）
-    compileOnly(files("libs/xposed-stub.jar"))
+    // LSPosed Modern API（libxposed API 102）：仅编译期，运行时由 LSPosed 提供（不打入 APK）
+    compileOnly("io.github.libxposed:api:102.0.0")
+    compileOnly("io.github.libxposed:annotation:1.0.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
