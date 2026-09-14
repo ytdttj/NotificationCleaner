@@ -26,6 +26,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -53,12 +56,16 @@ class MainActivity : ComponentActivity() {
     private var lostListener by mutableStateOf(false)
     private var lostBattery by mutableStateOf(false)
 
+    // ---- 进入应用自动检查更新（1.1.8）：onCreate/onNewIntent 递增触发 ----
+    private var entryCount by mutableStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent { AppTheme { AppRoot() } }
         // 入口检查：图标/保活通知进入都会走 onCreate 或 onNewIntent
         entryPermissionCheck(showAlert = true)
+        entryCount++
     }
 
     override fun onResume() {
@@ -70,6 +77,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         entryPermissionCheck(showAlert = true)
+        entryCount++
     }
 
     /**
@@ -109,6 +117,21 @@ class MainActivity : ComponentActivity() {
             )
             else -> {
                 MainScaffold()
+                // 进入应用自动检查更新（1.1.8）：有更新弹窗，无更新静默
+                val updateVm: cc.ytdttj.noticleaner.update.UpdateViewModel =
+                    viewModel(key = "updateEntry", factory = viewModelFactory {
+                        initializer { cc.ytdttj.noticleaner.update.UpdateViewModel() }
+                    })
+                LaunchedEffect(entryCount) {
+                    val s = updateVm.state.value
+                    // 正在下载/待安装时不打断，避免重复检查取消进行中的下载
+                    if (s !is cc.ytdttj.noticleaner.update.UpdateState.Downloading &&
+                        s !is cc.ytdttj.noticleaner.update.UpdateState.ReadyToInstall
+                    ) {
+                        updateVm.checkUpdate()
+                    }
+                }
+                cc.ytdttj.noticleaner.ui.update.UpdatePromptDialog(vm = updateVm, onDismiss = {})
                 if (alertVisible && (lostListener || lostBattery)) {
                     PermissionLostDialog(
                         lostListener = lostListener,
