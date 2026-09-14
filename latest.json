@@ -1,7 +1,7 @@
 {
-    "sha256":  "f797f5d04b33b58e6db0ff499a63338f75ee111f95a6e3c43c47fa035d22dfa1",
-    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.7/NotiCleaner-1.1.7.apk",
-    "versionCode":  15,
-    "versionName":  "1.1.7",
-    "notes":  "修复历史通知 APP 图标显示异常（自适应图标裁剪/清晰度/占位样式）"
+    "sha256":  "94d3463d3c95972293c1b13718a6c7f572001a88639eb7d6d471b9cfde9aa956",
+    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.8/NotiCleaner-1.1.8.apk",
+    "versionCode":  16,
+    "versionName":  "1.1.8",
+    "notes":  "修复学习/拦截时通知残留（待取消队列+重连追溯扫描+保活看门狗）；新增权限初始化与失效提醒"
 }

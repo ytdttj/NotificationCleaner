@@ -1,9 +1,12 @@
 package cc.ytdttj.noticleaner.ui
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
@@ -15,30 +18,104 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import cc.ytdttj.noticleaner.ServiceLocator
+import cc.ytdttj.noticleaner.notify.CleanerListenerService
 import cc.ytdttj.noticleaner.ui.history.HistoryScreen
+import cc.ytdttj.noticleaner.ui.permission.OnboardingScreen
+import cc.ytdttj.noticleaner.ui.permission.PermissionLostDialog
+import cc.ytdttj.noticleaner.ui.permission.checkPermissions
 import cc.ytdttj.noticleaner.ui.rules.AppPickerScreen
 import cc.ytdttj.noticleaner.ui.rules.AppPickerSession
 import cc.ytdttj.noticleaner.ui.rules.RuleEditScreen
 import cc.ytdttj.noticleaner.ui.rules.RulesScreen
 import cc.ytdttj.noticleaner.ui.settings.SettingsScreen
 import cc.ytdttj.noticleaner.ui.settings.StatsDetailScreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    // ---- 权限失效提醒（1.1.8）：每次进入应用检查一次 ----
+    private var alertVisible by mutableStateOf(false)
+    private var lostListener by mutableStateOf(false)
+    private var lostBattery by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            AppTheme {
+        setContent { AppTheme { AppRoot() } }
+        // 入口检查：图标/保活通知进入都会走 onCreate 或 onNewIntent
+        entryPermissionCheck(showAlert = true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 从授权页返回：仅当提醒框正显示时刷新（用户授权后自动关闭/更新）
+        entryPermissionCheck(showAlert = alertVisible)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        entryPermissionCheck(showAlert = true)
+    }
+
+    /**
+     * 进入应用时的权限检查（1.1.8）：
+     * - 通知读取权限已授权但监听未连接 → 请求系统重绑（自愈）
+     * - 可检测权限失效 → 弹窗提醒，可跳转重新授权
+     */
+    private fun entryPermissionCheck(showAlert: Boolean) {
+        val s = checkPermissions(this)
+        lostListener = !s.listenerEnabled
+        lostBattery = !s.batteryWhitelisted
+        if (showAlert && (lostListener || lostBattery)) alertVisible = true
+        if (!lostListener && !lostBattery) alertVisible = false
+        if (s.listenerEnabled) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                if (!CleanerListenerService.isListenerConnected()) {
+                    CleanerListenerService.requestRebindIfEnabled(this@MainActivity)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun AppRoot() {
+        // 权限初始化流程（1.1.8）：首次启动（含老版本升级后首次打开 1.1.8）走一遍
+        var onboardingDone by remember { mutableStateOf<Boolean?>(null) }
+        LaunchedEffect(Unit) {
+            onboardingDone = ServiceLocator.settings.onboardingDone.first()
+        }
+        when (onboardingDone) {
+            null -> Box(Modifier.fillMaxSize()) // DataStore 读取中
+            false -> OnboardingScreen(
+                onFinish = {
+                    onboardingDone = true
+                    lifecycleScope.launch { ServiceLocator.settings.setOnboardingDone() }
+                },
+            )
+            else -> {
                 MainScaffold()
+                if (alertVisible && (lostListener || lostBattery)) {
+                    PermissionLostDialog(
+                        lostListener = lostListener,
+                        lostBattery = lostBattery,
+                        onDismiss = { alertVisible = false },
+                    )
+                }
             }
         }
     }

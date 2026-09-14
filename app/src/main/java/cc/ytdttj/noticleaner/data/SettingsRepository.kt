@@ -23,6 +23,7 @@ class SettingsRepository(private val context: Context) {
     private val keyHideRecents = booleanPreferencesKey("exclude_from_recents")
     private val keyFilteredAi = intPreferencesKey("filtered_ai_count")
     private val keyFilteredRule = intPreferencesKey("filtered_rule_count")
+    private val keyOnboardingDone = booleanPreferencesKey("onboarding_done")
 
     val threshold: Flow<Float> = context.dataStore.data.map { it[keyThreshold] ?: 0.8f }
     val interceptMode: Flow<Boolean> = context.dataStore.data.map { it[keyIntercept] ?: true }
@@ -33,6 +34,9 @@ class SettingsRepository(private val context: Context) {
     /** 累计拦截数（常驻通知展示）：AI 拦截 / 用户规则拦截 */
     val filteredAiCount: Flow<Int> = context.dataStore.data.map { it[keyFilteredAi] ?: 0 }
     val filteredRuleCount: Flow<Int> = context.dataStore.data.map { it[keyFilteredRule] ?: 0 }
+
+    /** 权限初始化流程已完成（1.1.8 首次引入；默认 false → 老版本升级后也会走一遍初始化） */
+    val onboardingDone: Flow<Boolean> = context.dataStore.data.map { it[keyOnboardingDone] ?: false }
 
     suspend fun setThreshold(value: Float) {
         val clamped = value.coerceIn(0.5f, 1.0f)
@@ -45,6 +49,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setExcludeFromRecents(value: Boolean) {
         context.dataStore.edit { it[keyHideRecents] = value }
+    }
+
+    suspend fun setOnboardingDone() {
+        context.dataStore.edit { it[keyOnboardingDone] = true }
     }
 
     suspend fun incrementFiltered(ai: Boolean) {

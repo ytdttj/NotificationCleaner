@@ -37,10 +37,31 @@ class CleanerListenerService : NotificationListenerService() {
         @Volatile
         private var activeInstance: CleanerListenerService? = null
 
+        /** 学习/拦截时监听未连接 → 记入待取消队列；onListenerConnected 时补撤（1.1.8） */
+        private val pendingCancels: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
         /** 按通知 key 清除系统通知栏中的通知（供「学习为广告」联动使用） */
         fun cancelByKey(key: String) {
-            val svc = activeInstance ?: return
-            runCatching { svc.cancelNotification(key) }
+            val svc = activeInstance
+            if (svc == null) {
+                pendingCancels.add(key)
+                return
+            }
+            val ok = runCatching { svc.cancelNotification(key) }.isSuccess
+            if (!ok) pendingCancels.add(key)
+        }
+
+        /** 监听服务当前是否已连接（已连接才能收到通知回调/清除通知） */
+        fun isListenerConnected(): Boolean = activeInstance != null
+
+        /** 权限已授予但绑定断开时请求系统重绑（供保活看门狗/入口检查调用，1.1.8） */
+        fun requestRebindIfEnabled(context: Context) {
+            if (!isListenerEnabled(context)) return
+            runCatching {
+                NotificationListenerService.requestRebind(
+                    ComponentName(context, CleanerListenerService::class.java),
+                )
+            }
         }
 
         /** 硬放行词表：误杀代价极高，内容命中直接 PASSED（Plan.md §5.6 护栏） */
@@ -120,6 +141,16 @@ class CleanerListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        // 补撤：学习/拦截时监听未连接而残留的通知（1.1.8）
+        if (pendingCancels.isNotEmpty()) {
+            val keys = pendingCancels.toList()
+            pendingCancels.removeAll(keys)
+            keys.forEach { runCatching { cancelNotification(it) } }
+        }
+        // 追溯处理：监听断线期间弹出的通知不会触发回调，重连后扫一遍通知栏补处理（1.1.8）
+        runCatching {
+            activeNotifications?.forEach { sbn -> onNotificationPosted(sbn) }
+        }
         KeepAliveService.start(this)
     }
 
