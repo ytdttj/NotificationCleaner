@@ -1,7 +1,7 @@
 {
-    "sha256":  "2475cf34c3287b7fa001f27c61e2c734814e37c30a2bcd018e4e9477c770ce2d",
-    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.8/NotiCleaner-1.1.8.apk",
-    "versionCode":  16,
-    "versionName":  "1.1.8",
-    "notes":  "修复学习/拦截时通知残留；新增权限初始化与失效提醒；进入应用自动检查更新"
+    "sha256":  "5a2f9645420b1ccddc5649e1509d52f12c407e06b27e393dfd4cd02f3024b0e3",
+    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.9/NotiCleaner-1.1.9.apk",
+    "versionCode":  17,
+    "versionName":  "1.1.9",
+    "notes":  "修复更新下载失败：改用应用内直连下载（不再依赖系统 DownloadManager），latest.json 加缓存穿透，失败时显示各源具体原因"
 }
