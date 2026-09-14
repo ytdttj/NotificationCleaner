@@ -21,9 +21,10 @@ import java.net.URL
 
 /**
  * 应用内更新（UpgradePlan.md）：
- * 检查顺序 GitHub → Gitee（首个成功的 latest.json 生效）；
- * 下载顺序 GitHub → Gitee（应用内直连，1.1.9 起不再用系统 DownloadManager——
+ * 检查顺序 Gitee → GitHub（1.1.10 起 Gitee 优先，国内可达性更好；首个成功的 latest.json 生效）；
+ * 下载顺序 Gitee → GitHub（应用内直连，1.1.9 起不再用系统 DownloadManager——
  * 其 UA/网络栈在部分 ROM 上会被 CDN 拦截或污染导致 sha256 校验失败）。
+ * 注：latest.json 的 url 字段仅保留给旧版本客户端兜底，1.1.10+ 的候选地址由本端按镜像自行构造。
  * latest.json: {versionCode, versionName, notes, url?, sha256?}
  */
 @Serializable
@@ -52,11 +53,15 @@ class UpdateViewModel : ViewModel() {
 
     private var downloadJob: Job? = null
 
+    /** 上次检查成功的来源（gitee/github），下载优先使用同一镜像（1.1.10） */
+    @Volatile
+    private var lastCheckSource: String = "gitee"
+
     fun reset() {
         _state.value = UpdateState.Idle
     }
 
-    /** 手动/入口检查更新：GitHub → Gitee 依次请求 latest.json（带时间戳穿透 CDN 缓存） */
+    /** 检查更新（Gitee 优先，带时间戳穿透 CDN 缓存） */
     fun checkUpdate() {
         if (_state.value is UpdateState.Checking) return
         downloadJob?.cancel()
@@ -64,8 +69,10 @@ class UpdateViewModel : ViewModel() {
         viewModelScope.launch {
             val bust = "t=${System.currentTimeMillis()}"
             val result = withContext(Dispatchers.IO) {
-                fetchJson("${BuildConfig.UPDATE_LATEST_GITHUB}?$bust")
-                    ?: fetchJson("${BuildConfig.UPDATE_LATEST_GITEE}?$bust")
+                fetchJson("${BuildConfig.UPDATE_LATEST_GITEE}?$bust")
+                    ?.also { lastCheckSource = "gitee" }
+                    ?: fetchJson("${BuildConfig.UPDATE_LATEST_GITHUB}?$bust")
+                        ?.also { lastCheckSource = "github" }
             }
             _state.value = when {
                 result == null -> UpdateState.Error("检查失败：无法访问 GitHub 与 Gitee")
@@ -75,15 +82,17 @@ class UpdateViewModel : ViewModel() {
         }
     }
 
-    /** 下载 APK：GitHub → Gitee 的 Release 附件依次尝试（latest.json 的 url 作为最后兜底） */
+    /** 下载 APK：优先使用检查成功时的同一镜像（模板化 URL），另一镜像作备选 */
     fun startDownload(release: LatestRelease) {
         downloadJob?.cancel()
         val appCtx = cc.ytdttj.noticleaner.ServiceLocator.appContext
         val apkName = "NotiCleaner-${release.versionName}.apk"
-        val candidates = buildList {
-            add("GitHub" to (BuildConfig.UPDATE_APK_GITHUB + "/v" + release.versionName + "/" + apkName))
-            add("Gitee" to (BuildConfig.UPDATE_APK_GITEE + "/v" + release.versionName + "/" + apkName))
-            if (release.url.isNotBlank() && release.url.startsWith("http")) add("兜底" to release.url)
+        val giteeUrl = BuildConfig.UPDATE_APK_GITEE + "/v" + release.versionName + "/" + apkName
+        val githubUrl = BuildConfig.UPDATE_APK_GITHUB + "/v" + release.versionName + "/" + apkName
+        val candidates = if (lastCheckSource == "gitee") {
+            listOf("Gitee" to giteeUrl, "GitHub" to githubUrl)
+        } else {
+            listOf("GitHub" to githubUrl, "Gitee" to giteeUrl)
         }
         _state.value = UpdateState.Downloading(release, 0)
         downloadJob = viewModelScope.launch {

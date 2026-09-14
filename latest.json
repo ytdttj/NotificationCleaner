@@ -1,7 +1,6 @@
 {
-    "sha256":  "5a2f9645420b1ccddc5649e1509d52f12c407e06b27e393dfd4cd02f3024b0e3",
-    "url":  "https://github.com/ytdttj/NotificationCleaner/releases/download/v1.1.9/NotiCleaner-1.1.9.apk",
-    "versionCode":  17,
-    "versionName":  "1.1.9",
-    "notes":  "修复更新下载失败：改用应用内直连下载（不再依赖系统 DownloadManager），latest.json 加缓存穿透，失败时显示各源具体原因"
+    "sha256":  "7dbe512915670cb1c504a1f6c703a31d6e3eeeea0d2f6337b7dbc1a4a9993933",
+    "versionCode":  18,
+    "versionName":  "1.1.10",
+    "notes":  "更新源调整为 Gitee 优先；下载地址按检查源模板构造（不再依赖 latest.json 的 url 字段）"
 }

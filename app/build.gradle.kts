@@ -14,8 +14,8 @@ android {
         applicationId = "cc.ytdttj.noticleaner"
         minSdk = 26
         targetSdk = 36
-        versionCode = 17
-        versionName = "1.1.9"
+        versionCode = 18
+        versionName = "1.1.10"
     }
 
     buildTypes {
@@ -36,7 +36,8 @@ android {
         buildConfig = true
     }
     defaultConfig {
-        // 应用内更新候选源（latest.json），顺序 = 检查与下载优先级：GitHub → Gitee
+        // 应用内更新候选源（latest.json / Release 附件模板），顺序 = 检查与下载优先级：Gitee → GitHub
+        // 下载 URL 按版本号模板构造：{base}/v{versionName}/NotiCleaner-{versionName}.apk（1.1.10 起，不依赖 latest.json 的 url）
         buildConfigField("String", "UPDATE_LATEST_GITHUB",
             "\"https://raw.githubusercontent.com/ytdttj/NotificationCleaner/main/latest.json\"")
         buildConfigField("String", "UPDATE_LATEST_GITEE",
