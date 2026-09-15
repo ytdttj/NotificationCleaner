@@ -214,7 +214,8 @@ class CleanerListenerService : NotificationListenerService() {
         val dao: NotificationDao = locator.db.notificationDao()
         val modelRepo: ModelRepository = locator.modelRepo
 
-        val pkg = sbn.packageName
+        // 模拟来源解析（island 分支测试）：Shell 通知 tag island:<pkg> → 按模拟包名入库/打分/上岛
+        val pkg = cc.ytdttj.noticleaner.notify.island.IslandNotifier.effectivePackage(sbn)
         val appName = appNameCache.getOrPut(pkg) { appLabel(pkg) }
         val notification = sbn.notification
         val channel = notification?.channelId.orEmpty()

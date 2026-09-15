@@ -21,6 +21,26 @@ object IslandNotifier {
     private const val NOTIF_ID_FIRST = 9001
     private const val NOTIF_ID_LAST = 9999
 
+    // ---- 通知模拟（测试用）：Shell 身份通知 tag 携带模拟包名 ----
+    /** cmd notification post 的发送者固定为 com.android.shell（系统按 UID 绑定包名，无法伪造他人） */
+    const val SHELL_PACKAGE = "com.android.shell"
+    /** 模拟来源约定：tag = "island:<pkg>"，管线与岛展示按 <pkg> 处理 */
+    const val SIM_TAG_PREFIX = "island:"
+
+    /**
+     * 模拟来源解析：Shell 通知的 tag 带 island:<pkg> 前缀时返回模拟包名，
+     * 其余返回真实包名。设置页"通知模拟"发通知 → 完整过滤管线 → 上岛按模拟包名展示。
+     */
+    fun effectivePackage(sbn: StatusBarNotification): String {
+        if (sbn.packageName == SHELL_PACKAGE) {
+            val tag = sbn.tag
+            if (tag != null && tag.startsWith(SIM_TAG_PREFIX)) {
+                return tag.substringAfter(SIM_TAG_PREFIX).takeIf { it.isNotBlank() } ?: sbn.packageName
+            }
+        }
+        return sbn.packageName
+    }
+
     /** 默认白名单（islandplan.md §1.1；包名待真机核对，设置页可逐个开关） */
     val DEFAULT_PACKAGES: Set<String> = linkedSetOf(
         "com.eg.android.AlipayGphone", // 支付宝
@@ -75,11 +95,13 @@ object IslandNotifier {
      */
     fun maybePost(context: Context, sbn: StatusBarNotification, title: String, content: String) {
         if (!enabled) return
-        if (sbn.packageName !in packages) return
+        // 模拟来源解析：Shell 通知的 island:<pkg> tag → 按模拟包名走白名单/图标/App名
+        val pkg = effectivePackage(sbn)
+        if (pkg !in packages) return
         val payment = runCatching { PaymentExtractor.extract(title, content) }
             .getOrElse { Log.w(TAG, "extract failed", it); null } ?: return
 
-        val sig = "${sbn.packageName}|${title.hashCode()}|${content.hashCode()}"
+        val sig = "$pkg|${title.hashCode()}|${content.hashCode()}"
         val now = System.currentTimeMillis()
         val last = recentPosted[sig]
         if (last != null && now - last < DEDUP_WINDOW_MS) return
@@ -87,10 +109,10 @@ object IslandNotifier {
         recentPosted.entries.removeIf { now - it.value > DEDUP_WINDOW_MS }
         recentPosted[sig] = now
 
-        val appName = PACKAGE_LABELS[sbn.packageName] ?: appLabel(context, sbn.packageName)
+        val appName = PACKAGE_LABELS[pkg] ?: appLabel(context, pkg)
         val icon = runCatching {
             IslandParamsBuilder.drawableToBitmap(
-                context.packageManager.getApplicationIcon(sbn.packageName),
+                context.packageManager.getApplicationIcon(pkg),
             )
         }.getOrNull()
         val contentIntent = sbn.notification?.contentIntent

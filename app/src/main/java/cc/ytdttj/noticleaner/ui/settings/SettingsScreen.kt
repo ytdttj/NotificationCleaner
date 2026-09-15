@@ -156,6 +156,40 @@ class SettingsViewModel(
         }
     }
 
+    // ---- 通知模拟（island 测试）：Shell 身份发通知，tag 携带模拟包名 ----
+
+    private val _simulateBusy = MutableStateFlow(false)
+    val simulateBusy: StateFlow<Boolean> = _simulateBusy
+
+    fun simulateNotification(pkg: String, title: String, content: String) {
+        if (_simulateBusy.value) return
+        if (!cc.ytdttj.noticleaner.notify.island.IslandBypassExecutor.isReady()) {
+            _toast.value = "Shizuku 未授权：模拟发送需要 Shizuku"
+            return
+        }
+        if (title.isBlank() && content.isBlank()) {
+            _toast.value = "标题和内容不能同时为空"
+            return
+        }
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _simulateBusy.value = true
+            val island = cc.ytdttj.noticleaner.notify.island.IslandNotifier
+            val cmd = buildString {
+                append("cmd notification post")
+                if (title.isNotBlank()) append(" -t ").append(shellQuote(title))
+                append(" ").append(shellQuote(island.SIM_TAG_PREFIX + pkg))
+                if (content.isNotBlank()) append(" ").append(shellQuote(content))
+            }
+            val out = runCatching { ShizukuExecutor.exec(cmd) }
+                .getOrElse { "执行失败: $it" }
+            _simulateBusy.value = false
+            val label = island.PACKAGE_LABELS[pkg] ?: pkg
+            _toast.value = if (out.isBlank()) "模拟通知已发送（来源模拟为 $label）" else "发送失败: $out"
+        }
+    }
+
+    private fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
     fun requestIgnoreBattery() {
         ServiceLocator.keepAlive.requestIgnoreBatteryOptimization()
     }
@@ -395,6 +429,65 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 OutlinedButton(enabled = islandEnabled, onClick = { vm.sendTestIsland() }) {
                     Text("发送测试岛")
                 }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 通知模拟（island 测试：Shell 身份发通知进完整管线） ----
+        val simulateBusy by vm.simulateBusy.collectAsState()
+        var simPkg by remember { mutableStateOf("com.cmbchina.cmb.plainpinkage") }
+        var simTitle by remember { mutableStateOf("") }
+        var simContent by remember { mutableStateOf("") }
+        var simMenu by remember { mutableStateOf(false) }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("通知模拟（测试）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "以 Shell 身份发送一条通知进入完整过滤管线（AI 评分 → 决策 → 入库 → 上岛），岛展示按所选应用处理。" +
+                        "系统限制：通知栏那条通知的来源固定显示 Shell，无法伪造他人包名。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.foundation.layout.Box {
+                    OutlinedButton(onClick = { simMenu = true }) {
+                        Text(
+                            "模拟来源：" +
+                                (cc.ytdttj.noticleaner.notify.island.IslandNotifier.PACKAGE_LABELS[simPkg] ?: simPkg),
+                        )
+                    }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = simMenu,
+                        onDismissRequest = { simMenu = false },
+                    ) {
+                        cc.ytdttj.noticleaner.notify.island.IslandNotifier.PACKAGE_LABELS.forEach { (p, l) ->
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text(l) },
+                                onClick = { simPkg = p; simMenu = false },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = simTitle,
+                    onValueChange = { simTitle = it },
+                    label = { Text("通知标题") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = simContent,
+                    onValueChange = { simContent = it },
+                    label = { Text("通知内容（含金额即可上岛，如：您消费 ¥25.00）") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.Button(
+                    enabled = !simulateBusy,
+                    onClick = { vm.simulateNotification(simPkg, simTitle, simContent) },
+                ) { Text(if (simulateBusy) "发送中…" else "发送模拟通知") }
             }
         }
         Spacer(Modifier.height(12.dp))
