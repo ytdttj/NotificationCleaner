@@ -62,6 +62,10 @@ class SettingsViewModel(
     val filteredCount = dao.filteredCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val learnedCount = dao.learnedCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
+    // ---- 超级岛（island 分支功能）----
+    val islandEnabled = settings.islandEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val islandPackages = settings.islandPackages.stateIn(viewModelScope, SharingStarted.Eagerly, cc.ytdttj.noticleaner.notify.island.IslandNotifier.DEFAULT_PACKAGES)
+
     private val _keepAlive = MutableStateFlow(KeepAliveStatus())
     val keepAlive: StateFlow<KeepAliveStatus> = _keepAlive
 
@@ -108,6 +112,48 @@ class SettingsViewModel(
 
     fun setExcludeFromRecents(v: Boolean) {
         viewModelScope.launch { settings.setExcludeFromRecents(v) }
+    }
+
+    // ---- 超级岛（island 分支功能）----
+
+    fun setIslandEnabled(v: Boolean) {
+        viewModelScope.launch { settings.setIslandEnabled(v) }
+    }
+
+    fun toggleIslandPackage(pkg: String) {
+        viewModelScope.launch {
+            val current = islandPackages.value
+            val next = if (pkg in current) current - pkg else current + pkg
+            settings.setIslandPackages(next)
+        }
+    }
+
+    /** 探测超级岛支持情况（OS 版本 + Shizuku），结果回调主线程 */
+    fun probeIsland(onResult: (String) -> Unit) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val ctx = ServiceLocator.appContext
+            val protocol = runCatching {
+                android.provider.Settings.System.getInt(ctx.contentResolver, "notification_focus_protocol", 0)
+            }.getOrDefault(0)
+            val shizukuOk = runCatching {
+                rikka.shizuku.Shizuku.pingBinder() &&
+                    rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }.getOrDefault(false)
+            val osLine = when {
+                protocol >= 3 -> "系统：HyperOS 3 超级岛"
+                protocol == 2 -> "系统：焦点通知（OS2），无岛形态"
+                else -> "系统：不支持焦点通知/超级岛"
+            }
+            val shizukuLine = if (shizukuOk) "Shizuku：已授权" else "Shizuku：未授权（上岛必需）"
+            onResult("$osLine\n$shizukuLine")
+        }
+    }
+
+    /** 发送测试岛通知（走完整盲窗链路） */
+    fun sendTestIsland() {
+        cc.ytdttj.noticleaner.notify.island.IslandNotifier.sendTest(ServiceLocator.appContext) { msg ->
+            _toast.value = msg
+        }
     }
 
     fun requestIgnoreBattery() {
@@ -306,6 +352,49 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     )
                 }
                 Switch(checked = excludeRecents, onCheckedChange = { vm.setExcludeFromRecents(it) })
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 超级岛支付提醒（island 分支实验功能） ----
+        val islandEnabled by vm.islandEnabled.collectAsState()
+        val islandPackages by vm.islandPackages.collectAsState()
+        var islandStatus by remember { mutableStateOf("探测系统支持中…") }
+        LaunchedEffect(Unit) { vm.probeIsland { islandStatus = it } }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("超级岛支付提醒（实验）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "银行/支付类 App 的收支通知自动上岛：摘要态显示来源图标与金额，展开显示详情。仅 HyperOS 3 + Shizuku 生效，失败自动退化为普通通知。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(islandStatus, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                    Switch(checked = islandEnabled, onCheckedChange = { vm.setIslandEnabled(it) })
+                }
+                Text("上岛应用（点击切换）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    cc.ytdttj.noticleaner.notify.island.IslandNotifier.PACKAGE_LABELS.forEach { (pkg, label) ->
+                        androidx.compose.material3.FilterChip(
+                            selected = pkg in islandPackages,
+                            onClick = { vm.toggleIslandPackage(pkg) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(enabled = islandEnabled, onClick = { vm.sendTestIsland() }) {
+                    Text("发送测试岛")
+                }
             }
         }
         Spacer(Modifier.height(12.dp))

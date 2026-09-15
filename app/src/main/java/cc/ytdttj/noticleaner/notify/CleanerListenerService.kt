@@ -109,6 +109,17 @@ class CleanerListenerService : NotificationListenerService() {
                 appScope!!.launch {
                     ServiceLocator.settings.interceptMode.collect { cachedIntercept = it }
                 }
+                // island 分支：超级岛设置热路径缓存（islandplan.md §三）
+                appScope!!.launch {
+                    val s = ServiceLocator.settings
+                    kotlinx.coroutines.flow.combine(
+                        s.islandEnabled,
+                        s.islandPackages,
+                        s.islandBypassMs,
+                    ) { e, p, b -> Triple(e, p, b) }.collect { (e, p, b) ->
+                        cc.ytdttj.noticleaner.notify.island.IslandNotifier.onSettings(e, p, b.toLong())
+                    }
+                }
             }
             ServiceLocator.ruleEngine.start(appScope!!)
         }
@@ -258,6 +269,13 @@ class CleanerListenerService : NotificationListenerService() {
             // 清除失败（时机过早等）也记入待取消队列，重连时补撤（1.1.11 兜底）
             val ok = runCatching { cancelNotification(sbn.key) }.isSuccess
             if (!ok) pendingCancels.add(sbn.key)
+        } else {
+            // island 分支：放行通知的支付信息上岛（islandplan.md §三；内部全静默降级）
+            runCatching {
+                cc.ytdttj.noticleaner.notify.island.IslandNotifier.maybePost(
+                    applicationContext, sbn, title, content,
+                )
+            }
         }
 
         // ---- 入库（1.1.6：按槽位 key 去重 + 互斥，防并发双插）----

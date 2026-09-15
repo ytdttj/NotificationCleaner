@@ -1,0 +1,179 @@
+package cc.ytdttj.noticleaner.notify.island
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.os.Bundle
+import org.json.JSONObject
+
+/**
+ * 支付岛通知构建（islandplan.md §1.4）。
+ *
+ * 摘要态胶囊：左侧原 App 图标 + 右侧金额（"-¥25.00"）；
+ * 展开态：baseInfo(App名·方向 + 通知标题) / hintInfo(金额高亮 + 折算或正文)。
+ * isShowNotification=false：原通知本来就在通知栏，岛不再重复生成条目。
+ * 模板字段遵循 HyperOS 焦点通知 param_v2 协议（island.md §2.2 + SignalDock 实战经验）。
+ */
+object IslandParamsBuilder {
+
+    private const val CHANNEL_ID = "island_payment"
+    private const val PIC_APP = "miui.focus.pic_app"
+
+    /** 支出红 / 收入绿（展开态金额高亮） */
+    private const val COLOR_OUT = "#D94B30"
+    private const val COLOR_IN = "#2E9E5B"
+
+    fun ensureChannel(context: Context) {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "超级岛支付提醒", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "银行/支付类通知的超级岛展示（实验功能）"
+                },
+            )
+        }
+    }
+
+    fun build(
+        context: Context,
+        appName: String,
+        payment: PaymentExtractor.Payment,
+        title: String,
+        content: String,
+        sourceIcon: Bitmap?,
+        contentIntent: PendingIntent?,
+        islandTimeoutSec: Int = 120,
+    ): Notification {
+        ensureChannel(context)
+
+        // 摘要态胶囊：左图标 + 右金额
+        val bigIslandArea = JSONObject().apply {
+            put(
+                "imageTextInfoLeft",
+                JSONObject().put("type", 1).put(
+                    "picInfo",
+                    JSONObject().put("type", 1).put("pic", PIC_APP),
+                ),
+            )
+            put(
+                "imageTextInfoRight",
+                JSONObject().put("type", 2).put(
+                    "textInfo",
+                    JSONObject()
+                        .put("title", payment.capsuleText)
+                        .put("colorTitle", "#FFFFFF") // 胶囊背景深色，文字用白
+                        .put("turnAnim", false)
+                        .put("narrowFont", true)
+                        .put("showHighlightColor", false),
+                ),
+            )
+        }
+        val smallIslandArea = JSONObject().put(
+            "picInfo",
+            JSONObject().put("type", 1).put("pic", PIC_APP),
+        )
+
+        val directionText = when (payment.direction) {
+            PaymentExtractor.Direction.IN -> "收入"
+            PaymentExtractor.Direction.OUT -> "支出"
+            PaymentExtractor.Direction.UNKNOWN -> "收支"
+        }
+        // 展开态正文：优先外币折算行，其次通知正文首行
+        val hintContent = payment.convertedCnyText
+            ?: content.lineSequence().firstOrNull { it.isNotBlank() }?.take(40).orEmpty()
+
+        val baseInfo = JSONObject().apply {
+            put("type", 2)
+            put("title", "$appName · $directionText")
+            put("content", title.ifBlank { content.take(40) })
+            put("colorTitle", "#000000")
+            put("colorTitleDark", "#FFFFFF")
+            put("colorContent", "#666666")
+            put("colorContentDark", "#B8B8B8")
+            put("showDivider", false)
+            put("showContentDivider", false)
+        }
+        val picInfo = JSONObject().put("type", 1).put("pic", PIC_APP)
+        val hintInfo = JSONObject().apply {
+            put("type", 1)
+            put("title", (if (payment.direction == PaymentExtractor.Direction.IN) "+" else if (payment.direction == PaymentExtractor.Direction.OUT) "-" else "") + payment.currency.display + payment.amountText)
+            put("colorTitle", if (payment.direction == PaymentExtractor.Direction.IN) COLOR_IN else COLOR_OUT)
+            put("colorTitleDark", if (payment.direction == PaymentExtractor.Direction.IN) "#7BD9A2" else "#FF9B82")
+            if (hintContent.isNotBlank()) {
+                put("content", hintContent)
+                put("colorContent", "#666666")
+                put("colorContentDark", "#B8B8B8")
+            }
+        }
+
+        val paramIsland = JSONObject().apply {
+            put("islandProperty", 1) // 持久岛（进通知栏记录位，靠 islandTimeout 下岛）
+            put("islandPriority", 2)
+            put("islandTimeout", islandTimeoutSec)
+            put("dismissIsland", false)
+            put("expandedTime", 0) // 展开态不自动保持，用户手动展开
+            put("maxSize", false)
+            put("needCloseAnimation", true)
+            put("bigIslandArea", bigIslandArea)
+            put("smallIslandArea", smallIslandArea)
+        }
+
+        val paramV2 = JSONObject().apply {
+            put("protocol", 1)
+            put("business", "payment")
+            put("enableFloat", false) // 更新时不自动展开
+            put("islandFirstFloat", false)
+            put("updatable", false) // 一次性提醒类
+            put("isShowNotification", false) // 不生成重复的通知栏条目
+            put("ticker", "$appName ${payment.capsuleText.trim()}")
+            put("tickerPic", PIC_APP)
+            put("baseInfo", baseInfo)
+            put("picInfo", picInfo)
+            put("hintInfo", hintInfo)
+            put("param_island", paramIsland)
+        }
+
+        val pics = Bundle().apply {
+            val icon = sourceIcon?.let { android.graphics.drawable.Icon.createWithBitmap(it) }
+            icon?.let {
+                putParcelable(PIC_APP, it)
+                putParcelable("miui.focus.pic_ticker", it)
+            }
+        }
+
+        val extras = Bundle().apply {
+            putString("miui.focus.param", JSONObject().put("param_v2", paramV2).toString())
+            if (pics.size() > 0) putBundle("miui.focus.pics", pics)
+        }
+
+        val builder = Notification.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("$appName · $directionText")
+            .setContentText(payment.capsuleText.trim())
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .addExtras(extras)
+        contentIntent?.let { builder.setContentIntent(it) }
+        return builder.build()
+    }
+
+    /** 原 App 图标转 Bitmap（跨包资源图标在 SystemUI 侧解析不可靠，统一落位图） */
+    fun drawableToBitmap(drawable: Drawable?): Bitmap? {
+        val d = drawable ?: return null
+        if (d is BitmapDrawable && d.bitmap != null) return d.bitmap
+        val w = d.intrinsicWidth.takeIf { it > 0 } ?: 96
+        val h = d.intrinsicHeight.takeIf { it > 0 } ?: 96
+        return runCatching {
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bmp)
+            d.setBounds(0, 0, w, h)
+            d.draw(canvas)
+            bmp
+        }.getOrNull()
+    }
+}

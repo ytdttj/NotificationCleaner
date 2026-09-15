@@ -23,6 +23,8 @@ dist/
 
 # ==== 评估文档与参考仓库（仅本地） ====
 /miuixplan.md
+/island.md
+/islandplan.md
 ref/
 
 # ==== 训练相关：数据集与生成产物（脚本 train.py 保留上传） ====

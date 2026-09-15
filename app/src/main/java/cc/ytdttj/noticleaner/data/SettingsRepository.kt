@@ -5,7 +5,9 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import cc.ytdttj.noticleaner.notify.island.IslandNotifier
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -25,6 +27,11 @@ class SettingsRepository(private val context: Context) {
     private val keyFilteredRule = intPreferencesKey("filtered_rule_count")
     private val keyOnboardingDone = booleanPreferencesKey("onboarding_done")
 
+    // ---- 超级岛（island 分支功能，islandplan.md §四）----
+    private val keyIslandEnabled = booleanPreferencesKey("island_enabled")
+    private val keyIslandPackages = stringSetPreferencesKey("island_packages")
+    private val keyIslandBypassMs = intPreferencesKey("island_bypass_ms")
+
     val threshold: Flow<Float> = context.dataStore.data.map { it[keyThreshold] ?: 0.8f }
     val interceptMode: Flow<Boolean> = context.dataStore.data.map { it[keyIntercept] ?: true }
 
@@ -37,6 +44,21 @@ class SettingsRepository(private val context: Context) {
 
     /** 权限初始化流程已完成（1.1.8 首次引入；默认 false → 老版本升级后也会走一遍初始化） */
     val onboardingDone: Flow<Boolean> = context.dataStore.data.map { it[keyOnboardingDone] ?: false }
+
+    // ---- 超级岛（island 分支功能）----
+
+    val islandEnabled: Flow<Boolean> = context.dataStore.data.map { it[keyIslandEnabled] ?: false }
+    val islandPackages: Flow<Set<String>> =
+        context.dataStore.data.map { it[keyIslandPackages] ?: IslandNotifier.DEFAULT_PACKAGES }
+    val islandBypassMs: Flow<Int> = context.dataStore.data.map { it[keyIslandBypassMs] ?: 100 }
+
+    suspend fun setIslandEnabled(value: Boolean) {
+        context.dataStore.edit { it[keyIslandEnabled] = value }
+    }
+
+    suspend fun setIslandPackages(value: Set<String>) {
+        context.dataStore.edit { it[keyIslandPackages] = value }
+    }
 
     suspend fun setThreshold(value: Float) {
         val clamped = value.coerceIn(0.5f, 1.0f)
