@@ -1,6 +1,6 @@
 {
-    "sha256":  "7b485f5faabac2f645e0dffbfcfd17aed38e87b80f0b568d937ba98d258d8c51",
-    "versionCode":  19,
-    "versionName":  "1.1.11",
-    "notes":  "修复监听断线不自愈（达到阈值不拦截）；AI 学习通道特征（同 APP 同渠道通知偏置）；支持重复学习加权；\u0027\u003e/＞\u0027 标记抬概率 0.95；LSPosed 迁移 libxposed API 102"
+    "sha256":  "184033b53480ec0d4abf9ffa70afa22a56b1f68c12de05b14b00af6e445fa915",
+    "versionCode":  20,
+    "versionName":  "1.1.12",
+    "notes":  "修复 LSPosed 模块注册：切换到 libxposed API 102 Modern 注册方式（META-INF/xposed/module.prop + java_init.list），此前旧式声明（xposedminversion=100）已被 LSPosed 移除支持导致模块不加载；补 ProGuard keep 入口类"
 }

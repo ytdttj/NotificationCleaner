@@ -19,6 +19,7 @@
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:description="@string/app_description"
         android:supportsRtl="true"
         android:theme="@style/Theme.NotificationCleaner">
 
@@ -42,19 +43,9 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- LSPosed 模块声明（作用域：系统 android）；minversion 100 = 需支持 libxposed 新 API 的框架 -->
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="通知净化器后台保活：阻止系统停止本应用的通知监听服务" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="100" />
-        <meta-data
-            android:name="xposedscope"
-            android:resource="@array/xposed_scope" />
+        <!-- LSPosed 模块声明（libxposed API 102 Modern 注册）：
+             入口 META-INF/xposed/java_init.list；元数据 META-INF/xposed/module.prop；
+             作用域 META-INF/xposed/scope.list（system = system_server）。 -->
 
         <activity
             android:name=".ui.MainActivity"
