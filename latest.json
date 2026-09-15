@@ -1,6 +1,6 @@
 {
-    "sha256":  "7dbe512915670cb1c504a1f6c703a31d6e3eeeea0d2f6337b7dbc1a4a9993933",
-    "versionCode":  18,
-    "versionName":  "1.1.10",
-    "notes":  "更新源调整为 Gitee 优先；下载地址按检查源模板构造（不再依赖 latest.json 的 url 字段）"
+    "sha256":  "7b485f5faabac2f645e0dffbfcfd17aed38e87b80f0b568d937ba98d258d8c51",
+    "versionCode":  19,
+    "versionName":  "1.1.11",
+    "notes":  "修复监听断线不自愈（达到阈值不拦截）；AI 学习通道特征（同 APP 同渠道通知偏置）；支持重复学习加权；\u0027\u003e/＞\u0027 标记抬概率 0.95；LSPosed 迁移 libxposed API 102"
 }
