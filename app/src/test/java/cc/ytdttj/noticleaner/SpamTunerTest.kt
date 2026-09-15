@@ -10,6 +10,7 @@ import java.io.File
 /**
  * 端上学习回归测试（1.1.0，复刻 Notice 全量重拟合架构）：
  * 标注集拟合稀疏 delta → 叠加 base → 学习效果显著；移除标注后重拟合精确回滚。
+ * 1.1.11：样本构造扩展 channelKey/weight（默认值，行为不变）。
  */
 class SpamTunerTest {
 

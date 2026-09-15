@@ -1,4 +1,4 @@
-﻿package cc.ytdttj.noticleaner.ai
+package cc.ytdttj.noticleaner.ai
 
 /**
  * 特征哈希器 —— 与 training/train.py 中的 Python 参考实现逐位一致（唯一规范见 Plan.md §5.2）。
@@ -69,6 +69,16 @@ object FeatureHasher {
             }
         }
         return counts
+    }
+
+    /**
+     * 通道特征 key（1.1.11）：`ch:{pkg}/{channelId}` 哈希进同一桶空间。
+     * 前缀 "ch:" 避免与文本 n-gram 系统性碰撞（随机碰撞概率 2^-18，可忽略；
+     * 且 fit 与 score 对称计算，即使撞上 base 噪声桶 delta 也会自动补偿）。
+     */
+    fun channelKey(pkg: String, channelId: String): Int {
+        val units = "ch:$pkg/$channelId".toByteArray(Charsets.UTF_16LE)
+        return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
     }
 
     /** FNV-1a 32bit（与 Python 逐字节一致） */

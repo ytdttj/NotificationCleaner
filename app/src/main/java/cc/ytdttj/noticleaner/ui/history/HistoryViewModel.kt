@@ -97,13 +97,19 @@ class HistoryViewModel(
         }
     }
 
-    /** 学习标注（写入标注集后全量重拟合）。学习为广告的同时清除通知栏中的该通知 */
+    /**
+     * 学习标注（写入标注集后全量重拟合）。学习为广告的同时清除通知栏中的该通知。
+     * 1.1.11：允许对已学习通知重复学习——同方向重复点击累积 learnCount，
+     * 拟合时按重复次数加权（大幅提升权重）；换方向则重置计数。
+     */
     fun learn(n: NotificationEntity, label: Int) {
         viewModelScope.launch(Dispatchers.Default) {
+            val sameDirection = n.learned && n.learnLabel == label
             dao.update(
                 n.copy(
                     learned = true,
                     learnLabel = label,
+                    learnCount = if (sameDirection) n.learnCount + 1 else 1,
                     decision = if (label == 1) DECISION_MANUAL_MARKED_AD else DECISION_PASSED,
                 ),
             )
@@ -111,24 +117,30 @@ class HistoryViewModel(
                 cc.ytdttj.noticleaner.notify.CleanerListenerService.cancelByKey(n.key)
             }
             val updated = refit()
-            _selected.value = updated.firstOrNull { it.id == n.id } ?: n.copy(learned = true, learnLabel = label)
-            _toast.value = if (label == 1) "已学习为广告通知并清除" else "已学习为正常通知"
+            _selected.value = updated.firstOrNull { it.id == n.id }
+                ?: n.copy(learned = true, learnLabel = label, learnCount = if (sameDirection) n.learnCount + 1 else 1)
+            _toast.value = when {
+                label == 1 && sameDirection -> "已重复学习（第 ${n.learnCount + 1} 次），权重已加强"
+                label == 1 -> "已学习为广告通知并清除"
+                else -> "已学习为正常通知"
+            }
         }
     }
 
     /** 取消学习：从标注集移除后重新拟合，精确回滚 */
     fun unlearn(n: NotificationEntity) {
         viewModelScope.launch(Dispatchers.Default) {
-            dao.update(n.copy(learned = false, learnLabel = -1))
+            dao.update(n.copy(learned = false, learnLabel = -1, learnCount = 0))
             val updated = refit()
-            _selected.value = updated.firstOrNull { it.id == n.id } ?: n.copy(learned = false, learnLabel = -1)
+            _selected.value = updated.firstOrNull { it.id == n.id } ?: n.copy(learned = false, learnLabel = -1, learnCount = 0)
             _toast.value = "已取消学习"
         }
     }
 
     /**
      * 用全部标注在冻结 base 上重新拟合稀疏 delta，叠加到生效模型，
-     * 并刷新所有已学习行的概率展示。@return 重算后的已学习行
+     * 并刷新所有已学习行的概率展示。@return 重算后的已学习行。
+     * 1.1.11：样本携带通道特征（同 App 同渠道偏置）与重复学习权重。
      */
     private suspend fun refit(): List<NotificationEntity> {
         val labels = dao.listLearnedOnce()
@@ -136,6 +148,12 @@ class HistoryViewModel(
             SpamTuner.Sample(
                 text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n"),
                 spam = it.learnLabel == 1,
+                channelKey = if (it.channelId.isNotEmpty()) {
+                    cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(it.packageName, it.channelId)
+                } else {
+                    0
+                },
+                weight = maxOf(1, it.learnCount),
             )
         }
         val base = modelRepo.baseModel() ?: return labels
@@ -143,11 +161,16 @@ class HistoryViewModel(
         modelRepo.applyDelta(delta)
         modelRepo.setTunedFingerprint(modelRepo.baseFingerprint())
 
-        // 用新模型刷新已学习行的概率展示
+        // 用新模型刷新已学习行的概率展示（带通道偏置，与热路径决策一致）
         val effective = modelRepo.get() ?: return labels
         val updated = labels.map {
             val text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n")
-            val p = effective.score(text).toFloat()
+            val chKey = if (it.channelId.isNotEmpty()) {
+                cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(it.packageName, it.channelId)
+            } else {
+                null
+            }
+            val p = effective.score(text, chKey).toFloat()
             val row = it.copy(adProbability = p)
             dao.update(row)
             row

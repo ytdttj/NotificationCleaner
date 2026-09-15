@@ -76,6 +76,9 @@ class CleanerListenerService : NotificationListenerService() {
         private val HARD_ALLOW_WORDS =
             listOf("验证码", "动态码", "校验码", "OTP", "verification code", "one-time")
 
+        /** 强广告标记（1.1.11）：通知内容含 ">" / ">>"（含全角）极大概率为广告，概率抬到 0.95 */
+        private const val SPAM_MARK_BOOST = 0.95
+
         private val EXPIRE_MS = TimeUnit.DAYS.toMillis(7)
         private val DEDUP_WINDOW_MS = TimeUnit.SECONDS.toMillis(60)
 
@@ -228,7 +231,19 @@ class CleanerListenerService : NotificationListenerService() {
                             HARD_ALLOW_WORDS.any { joined.contains(it, ignoreCase = true) }
                         if (!hardAllow) {
                             // 模型不可用（assets 缺失/损坏）时跳过打分，按放行处理
-                            val p = modelRepo.get()?.score(joined) ?: 0.0
+                            // 1.1.11：带通道偏置打分（同 App 同渠道的学习成果直接生效）
+                            val chKey = if (channel.isNotEmpty()) {
+                                cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(pkg, channel)
+                            } else {
+                                null
+                            }
+                            val p0 = modelRepo.get()?.score(joined, chKey) ?: 0.0
+                            // 1.1.11：">"/">>" 强广告标记（覆盖全角 ＞），命中抬到 0.95
+                            val p = if (joined.contains('>') || joined.contains('＞')) {
+                                maxOf(p0, SPAM_MARK_BOOST)
+                            } else {
+                                p0
+                            }
                             probability = p.toFloat()
                             if (p >= cachedThreshold && cachedIntercept) {
                                 decision = DECISION_FILTERED_BY_AI

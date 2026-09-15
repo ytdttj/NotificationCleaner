@@ -313,13 +313,22 @@ private fun NotificationDetail(
             Text("跳转到该通道设置")
         }
         Spacer(Modifier.height(8.dp))
-        if (n.learned) {
-            AssistChip(onClick = onUnlearn, label = { Text("取消学习") })
-        } else {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { onLearn(1) }, Modifier.weight(1f)) { Text("广告通知") }
-                OutlinedButton(onClick = { onLearn(0) }, Modifier.weight(1f)) { Text("正常通知") }
+        // 1.1.11：已学习的通知也允许再次点击学习（同方向重复点击累积权重）；随时可取消学习
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val adText = when {
+                n.learned && n.learnLabel == 1 -> "再学一次广告(${n.learnCount + 1})"
+                else -> "广告通知"
             }
+            val normalText = when {
+                n.learned && n.learnLabel == 0 -> "再学一次正常(${n.learnCount + 1})"
+                else -> "正常通知"
+            }
+            Button(onClick = { onLearn(1) }, Modifier.weight(1f)) { Text(adText) }
+            OutlinedButton(onClick = { onLearn(0) }, Modifier.weight(1f)) { Text(normalText) }
+        }
+        if (n.learned) {
+            Spacer(Modifier.height(8.dp))
+            AssistChip(onClick = onUnlearn, label = { Text("取消学习") })
         }
         Spacer(Modifier.height(24.dp))
     }

@@ -1,4 +1,4 @@
-﻿package cc.ytdttj.noticleaner.data.db
+package cc.ytdttj.noticleaner.data.db
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
@@ -33,6 +33,7 @@ data class NotificationEntity(
     val decision: String,
     val learned: Boolean = false,
     val learnLabel: Int = -1, // 学习方向：1=广告 0=正常 -1=未学习
+    val learnCount: Int = 0, // 同一通知被重复学习的次数（1.1.11：重复学习加权）
     val expireAt: Long,
     val key: String = "", // 通知系统 sbn.key，撤销过滤时重新展示用不到，仅留档
 )

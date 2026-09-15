@@ -15,12 +15,33 @@ import kotlin.math.sqrt
  * - 删除标注后重新拟合即精确回滚
  */
 object SpamTuner {
-    data class Sample(val text: String, val spam: Boolean)
+    /**
+     * 学习样本（1.1.11 扩展）：
+     * @param channelKey 通道特征桶（pkg+channelId 哈希，见 [FeatureHasher.channelKey]）；
+     *        作为独立 log-odds 偏置参与拟合与打分（不混入文本 L2 归一化，避免被稀释）
+     * @param weight 样本权重 = 同一通知被重复学习的次数（>3 次大幅提升；拟合时按重复样本计入）
+     */
+    data class Sample(
+        val text: String,
+        val spam: Boolean,
+        val channelKey: Int = 0,
+        val weight: Int = 1,
+    )
 
     /** 归一化后短于此长度的文本不参与拟合（信号太少） */
     const val MIN_LENGTH = 4
 
-    private class Prepared(val z0: Float, val y: Float, val keys: IntArray, val x: FloatArray)
+    /** 重复学习样本权重上限（防止单样本过拟合把权重推爆，与既有重复通知 cap=10 惯例一致） */
+    const val MAX_WEIGHT = 10
+
+    private class Prepared(
+        val z0: Float,
+        val y: Float,
+        val keys: IntArray,
+        val x: FloatArray,
+        val channelKey: Int,
+        val repeats: Int,
+    )
 
     fun fit(
         base: SpamModel,
@@ -29,7 +50,11 @@ object SpamTuner {
         lr: Float = 1f,
         l2: Float = 0.005f,
     ): SpamDelta {
-        val prepared = samples.mapNotNull { prepare(base, it) }
+        // 重复学习的样本按 repeats 展开计入（1.1.11：同方向重复学习显著提升权重）
+        val prepared = samples.flatMap { s ->
+            val p = prepare(base, s) ?: return@flatMap emptyList()
+            List(p.repeats) { p }
+        }
         if (prepared.isEmpty()) return SpamDelta.empty(base.buckets)
 
         val delta = HashMap<Int, Float>()
@@ -37,11 +62,17 @@ object SpamTuner {
             for (s in prepared) {
                 var z = s.z0
                 for (i in s.keys.indices) z += (delta[s.keys[i]] ?: 0f) * s.x[i]
+                // 通道独立偏置（x=1，不参与 L2 归一化）：同 App 同渠道的推送性质高度一致
+                if (s.channelKey != 0) z += (delta[s.channelKey] ?: 0f)
                 val g = sigmoid(z) - s.y
                 for (i in s.keys.indices) {
                     val k = s.keys[i]
                     val current = delta[k] ?: 0f
                     delta[k] = current - lr * (g * s.x[i] + l2 * current)
+                }
+                if (s.channelKey != 0) {
+                    val current = delta[s.channelKey] ?: 0f
+                    delta[s.channelKey] = current - lr * (g + l2 * current)
                 }
             }
         }
@@ -71,7 +102,17 @@ object SpamTuner {
             z0 += base.weights[k] * x[i]
             i++
         }
-        return Prepared(z0 = z0, y = if (sample.spam) 1f else 0f, keys = keys, x = x)
+        // 通道桶的 base 权重计入 z0（fit 与 score 对称，delta 自动补偿 base 噪声）
+        val channelKey = sample.channelKey
+        if (channelKey != 0) z0 += base.weights[channelKey]
+        return Prepared(
+            z0 = z0,
+            y = if (sample.spam) 1f else 0f,
+            keys = keys,
+            x = x,
+            channelKey = channelKey,
+            repeats = sample.weight.coerceIn(1, MAX_WEIGHT),
+        )
     }
 
     private fun sigmoid(z: Float): Float {

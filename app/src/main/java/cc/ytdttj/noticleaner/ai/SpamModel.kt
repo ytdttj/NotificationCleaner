@@ -33,6 +33,24 @@ class SpamModel(
     /** [text] 为广告的概率，取值范围 [0, 1]。 */
     fun score(rawText: String): Double = scoreWith(weights, bias, rawText)
 
+    /**
+     * 带通道偏置的打分（1.1.11）：在文本 log-odds 上叠加通道桶权重（delta 学习所得）。
+     * [channelKey] 为 [FeatureHasher.channelKey] 计算的桶索引；null/0 表示无通道信息。
+     */
+    fun score(rawText: String, channelKey: Int?): Double {
+        if (channelKey == null || channelKey == 0) return score(rawText)
+        val counts = FeatureHasher.counts(rawText)
+        var z = bias + weights[channelKey].toDouble()
+        if (counts.isEmpty()) return sigmoid(z)
+        var normSq = 0.0
+        for (c in counts.values) normSq += c.toDouble() * c.toDouble()
+        val norm = kotlin.math.sqrt(normSq)
+        for ((k, c) in counts) {
+            z += weights[k].toDouble() * (c.toDouble() / norm)
+        }
+        return sigmoid(z)
+    }
+
     /** 将 [delta] 叠加到权重后得到的新模型副本；桶数不匹配或 delta 为空时返回自身。 */
     fun withDelta(delta: SpamDelta): SpamModel {
         if (delta.buckets != buckets || delta.isEmpty) return this
