@@ -37,6 +37,14 @@ class CleanerListenerService : NotificationListenerService() {
         @Volatile
         private var activeInstance: CleanerListenerService? = null
 
+        /**
+         * 监听真实连接状态（1.1.11 修复）：由 onListenerConnected/onListenerDisconnected 维护。
+         * 此前看门狗用 activeInstance != null 判断——绑定断开但实例未销毁时会误判"已连接"，
+         * 导致看门狗从不去重绑，只能靠进入 APP 的强制 rebind 自愈。
+         */
+        @Volatile
+        private var listenerConnected = false
+
         /** 学习/拦截时监听未连接 → 记入待取消队列；onListenerConnected 时补撤（1.1.8） */
         private val pendingCancels: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
@@ -52,7 +60,7 @@ class CleanerListenerService : NotificationListenerService() {
         }
 
         /** 监听服务当前是否已连接（已连接才能收到通知回调/清除通知） */
-        fun isListenerConnected(): Boolean = activeInstance != null
+        fun isListenerConnected(): Boolean = listenerConnected
 
         /** 权限已授予但绑定断开时请求系统重绑（供保活看门狗/入口检查调用，1.1.8） */
         fun requestRebindIfEnabled(context: Context) {
@@ -141,6 +149,7 @@ class CleanerListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        listenerConnected = true
         // 补撤：学习/拦截时监听未连接而残留的通知（1.1.8）
         if (pendingCancels.isNotEmpty()) {
             val keys = pendingCancels.toList()
@@ -155,6 +164,8 @@ class CleanerListenerService : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
+        // 1.1.11 修复：断线必须先落标志，否则看门狗用实例存在误判"已连接"，永远不会自愈重绑
+        listenerConnected = false
         // 监听断线（进程被杀后系统回收绑定）→ 自愈重绑（Plan.md §7.1）
         requestRebindCompat(this)
         super.onListenerDisconnected()
@@ -229,7 +240,9 @@ class CleanerListenerService : NotificationListenerService() {
         }
 
         if (decision == DECISION_FILTERED_BY_AI || decision == DECISION_FILTERED_BY_RULE) {
-            runCatching { cancelNotification(sbn.key) }
+            // 清除失败（时机过早等）也记入待取消队列，重连时补撤（1.1.11 兜底）
+            val ok = runCatching { cancelNotification(sbn.key) }.isSuccess
+            if (!ok) pendingCancels.add(sbn.key)
         }
 
         // ---- 入库（1.1.6：按槽位 key 去重 + 互斥，防并发双插）----

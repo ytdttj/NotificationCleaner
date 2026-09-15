@@ -69,11 +69,11 @@ class KeepAliveService : Service() {
                         }
                     }
             }
-            // 看门狗（1.1.8）：无 Root/Shizuku 时监听绑定可能被系统悄悄回收；
-            // 每分钟检查一次：权限仍在但监听未连接 → 请求系统重绑
+            // 看门狗（1.1.11：间隔 60s→30s）：无 Root/Shizuku 时监听绑定可能被系统悄悄回收；
+            // 检查真实连接标志（onListenerDisconnected 落 false），断线即请求系统重绑
             s.launch {
                 while (true) {
-                    kotlinx.coroutines.delay(60_000)
+                    kotlinx.coroutines.delay(30_000)
                     runCatching {
                         if (CleanerListenerService.isListenerEnabled(this@KeepAliveService) &&
                             !CleanerListenerService.isListenerConnected()
