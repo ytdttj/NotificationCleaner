@@ -11,11 +11,13 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "cc.ytdttj.noticleaner"
+        // island 分支：包名加 island 后缀，与正式版并存安装；namespace 保持不变（Manifest 相对类名/R 类不受影响）
+        applicationId = "cc.ytdttj.noticleanerisland"
         minSdk = 26
         targetSdk = 36
         versionCode = 20
-        versionName = "1.1.12"
+        // 版本名跟随 main + Island 后缀（仅展示用；island 版禁用应用内更新，latest.json 通道永远指向正式版）
+        versionName = "1.1.12 Island"
     }
 
     buildTypes {

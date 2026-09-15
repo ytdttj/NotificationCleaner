@@ -32,7 +32,8 @@ import java.util.concurrent.TimeUnit
 class CleanerListenerService : NotificationListenerService() {
 
     companion object {
-        const val SELF_PACKAGE = "cc.ytdttj.noticleaner"
+        // island 分支：跟随 applicationId（island 版 = cc.ytdttj.noticleanerisland）
+        val SELF_PACKAGE = cc.ytdttj.noticleaner.BuildConfig.APPLICATION_ID
 
         @Volatile
         private var activeInstance: CleanerListenerService? = null

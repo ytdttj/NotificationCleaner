@@ -72,7 +72,8 @@ class LspEntry : XposedModule() {
 
     companion object {
         private const val TAG = "NotiCleaner"
-        private const val TARGET = "cc.ytdttj.noticleaner"
+        // island 分支：跟随 applicationId（island 版包名不同，LSPosed 需单独激活本模块）
+        private val TARGET = cc.ytdttj.noticleaner.BuildConfig.APPLICATION_ID
         private const val AS_CLASS = "com.android.server.am.ActiveServices"
 
         /** 覆盖多个 ROM 版本的方法名（存在哪个 hook 哪个，全部失败也不影响系统） */
