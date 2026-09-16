@@ -1,6 +1,6 @@
 {
-    "sha256":  "184033b53480ec0d4abf9ffa70afa22a56b1f68c12de05b14b00af6e445fa915",
-    "versionCode":  20,
-    "versionName":  "1.1.12",
-    "notes":  "修复 LSPosed 模块注册：切换到 libxposed API 102 Modern 注册方式（META-INF/xposed/module.prop + java_init.list），此前旧式声明（xposedminversion=100）已被 LSPosed 移除支持导致模块不加载；补 ProGuard keep 入口类"
+    "sha256":  "f2de1b875659fa580375e046fe4b16e2dacf2cf36042177f3d7aa7b19c266607",
+    "versionCode":  21,
+    "versionName":  "1.1.13",
+    "notes":  "修复多任务卡片隐藏在经保活通知进入后失效；缓解长锁屏后过滤延迟（Doze 免疫闹钟看门狗+亮屏自愈+处理唤醒锁）"
 }

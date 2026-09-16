@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import cc.ytdttj.noticleaner.R
@@ -20,6 +22,8 @@ import kotlinx.coroutines.launch
 /**
  * T0 保活前台服务（Plan.md §7.1）：START_STICKY 常驻，低优先级通知显示累计拦截统计。
  * 1.1.5：内容为「已拦截 AI X 条 · 规则 Y 条」，随拦截实时刷新（DataStore 持久计数）。
+ * 1.1.13：闹钟看门狗（Doze 免疫）+ 亮屏/解锁立即自愈；保活通知 Intent 按开关携带
+ * FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS（否则经通知拉起的新任务不会隐藏后台卡片）。
  * specialUse 类型（API 34+ 声明 PROPERTY_SPECIAL_USE_FGS_SUBTYPE）。
  */
 class KeepAliveService : Service() {
@@ -37,6 +41,19 @@ class KeepAliveService : Service() {
 
     private var scope: CoroutineScope? = null
 
+    /** 亮屏/解锁自愈（1.1.13）：Doze 期间积压的重绑需求在亮屏瞬间补做 */
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            runCatching {
+                if (CleanerListenerService.isListenerEnabled(context) &&
+                    !CleanerListenerService.isListenerConnected()
+                ) {
+                    CleanerListenerService.requestRebindIfEnabled(context)
+                }
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -52,25 +69,35 @@ class KeepAliveService : Service() {
             )
         }
 
-        // 初始进入前台（必须先 startForeground，再由统计流刷新内容）
-        runCatching { startForeground(NOTIF_ID, buildNotification(0, 0)) }
+        // 1.1.13：Doze 免疫的闹钟看门狗 + 亮屏/解锁自愈
+        WatchdogReceiver.schedule(this)
+        runCatching {
+            registerReceiver(
+                screenReceiver,
+                IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_USER_PRESENT) },
+            )
+        }
 
-        // 累计拦截统计：DataStore 计数变化（AI / 规则）→ 实时刷新常驻通知
+        // 初始进入前台（必须先 startForeground，再由统计流刷新内容）
+        runCatching { startForeground(NOTIF_ID, buildNotification(0, 0, false)) }
+
+        // 累计拦截统计 + 多任务隐藏开关：任一变化 → 重建常驻通知（Intent 携带正确的隐藏 flag）
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { s ->
             s.launch {
                 combine(
                     ServiceLocator.settings.filteredAiCount,
                     ServiceLocator.settings.filteredRuleCount,
-                ) { a, r -> a to r }
-                    .collect { (a, r) ->
+                    ServiceLocator.settings.excludeFromRecents,
+                ) { a, r, e -> Triple(a, r, e) }
+                    .collect { (a, r, e) ->
                         runCatching {
                             getSystemService(NotificationManager::class.java)
-                                .notify(NOTIF_ID, buildNotification(a, r))
+                                .notify(NOTIF_ID, buildNotification(a, r, e))
                         }
                     }
             }
-            // 看门狗（1.1.11：间隔 60s→30s）：无 Root/Shizuku 时监听绑定可能被系统悄悄回收；
-            // 检查真实连接标志（onListenerDisconnected 落 false），断线即请求系统重绑
+            // 协程看门狗（1.1.11：间隔 60s→30s）：亮屏期间的快速自愈路径；
+            // Doze 下会被挂起，由 WatchdogReceiver 闹钟兜底
             s.launch {
                 while (true) {
                     kotlinx.coroutines.delay(30_000)
@@ -89,21 +116,28 @@ class KeepAliveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(screenReceiver) }
         scope?.cancel()
         scope = null
         super.onDestroy()
     }
 
-    private fun buildNotification(aiCount: Int, ruleCount: Int): Notification {
-        val contentIntent = android.app.PendingIntent.getActivity(
-            this,
-            0,
+    private fun buildNotification(aiCount: Int, ruleCount: Int, excludeFromRecents: Boolean): Notification {
+        val launchIntent =
             android.content.Intent(this, cc.ytdttj.noticleaner.ui.MainActivity::class.java)
                 // CLEAR_TOP 复用已存在的任务栈，避免返回时叠一层主界面
                 .addFlags(
                     android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
                         android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP,
-                ),
+                )
+        // 1.1.13：开关开启时 Intent 携带隐藏 flag——任务被系统重建后仍保持隐藏
+        if (excludeFromRecents) {
+            launchIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+        }
+        val contentIntent = android.app.PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
             android.app.PendingIntent.FLAG_IMMUTABLE,
         )
         val text = "已拦截 AI $aiCount 条 · 规则 $ruleCount 条"

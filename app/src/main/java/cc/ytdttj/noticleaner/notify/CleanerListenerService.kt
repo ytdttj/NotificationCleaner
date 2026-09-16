@@ -193,6 +193,15 @@ class CleanerListenerService : NotificationListenerService() {
             .distinct().joinToString(" ").ifEmpty { content }
         if (title.isEmpty() && text.isEmpty()) return
 
+        // 1.1.13：灭屏瞬间 CPU 可能被挂起导致打分/入库中断，短超时部分唤醒锁保证处理完成
+        runCatching {
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            pm?.newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                "NotiCleaner:handle",
+            )?.acquire(10_000)
+        }
+
         val scope = appScope ?: return
         scope.launch { handle(sbn, title, text) }
     }

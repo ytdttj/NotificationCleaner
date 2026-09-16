@@ -86,5 +86,11 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- 1.1.13：Doze 免疫的闹钟看门狗（保活服务被杀后仍维持监听重绑自愈链） -->
+        <receiver
+            android:name=".notify.WatchdogReceiver"
+            android:enabled="true"
+            android:exported="false" />
     </application>
 </manifest>

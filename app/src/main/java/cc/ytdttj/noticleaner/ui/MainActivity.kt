@@ -84,6 +84,8 @@ class MainActivity : ComponentActivity() {
      * 进入应用时的权限检查（1.1.8）：
      * - 通知读取权限已授权但监听未连接 → 请求系统重绑（自愈）
      * - 可检测权限失效 → 弹窗提醒，可跳转重新授权
+     * 1.1.13：每次进入重新应用「多任务隐藏」——该标志只对当前任务实例生效，
+     * 任务被系统重建后（如进程死亡后由保活通知拉起）标志丢失，必须重新应用。
      */
     private fun entryPermissionCheck(showAlert: Boolean) {
         val s = checkPermissions(this)
@@ -91,6 +93,10 @@ class MainActivity : ComponentActivity() {
         lostBattery = !s.batteryWhitelisted
         if (showAlert && (lostListener || lostBattery)) alertVisible = true
         if (!lostListener && !lostBattery) alertVisible = false
+        lifecycleScope.launch {
+            // 1.1.13：每次进入按当前设置重应用任务隐藏（任务标志不跨任务实例持久）
+            applyExcludeFromRecents(ServiceLocator.settings.excludeFromRecents.first())
+        }
         if (s.listenerEnabled) {
             lifecycleScope.launch(Dispatchers.IO) {
                 if (!CleanerListenerService.isListenerConnected()) {
