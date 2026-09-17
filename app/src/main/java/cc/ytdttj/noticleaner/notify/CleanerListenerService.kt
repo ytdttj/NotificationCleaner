@@ -143,25 +143,32 @@ class CleanerListenerService : NotificationListenerService() {
         super.onCreate()
         activeInstance = this
         initScope(this)
+        android.util.Log.i("NCWatch", "listener onCreate uptime=${android.os.SystemClock.elapsedRealtime()}")
         val scope = appScope ?: return
         scope.launch {
             ServiceLocator.db.notificationDao().purgeExpired(System.currentTimeMillis())
         }
+        // 1.1.14：进程被拉起（NMS 重绑/开机/升级）时也续约闹钟看门狗，保证链条不断
+        WatchdogReceiver.schedule(this)
         KeepAliveService.start(this)
     }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
         listenerConnected = true
+        android.util.Log.i("NCWatch", "listener CONNECTED")
         // 补撤：学习/拦截时监听未连接而残留的通知（1.1.8）
         if (pendingCancels.isNotEmpty()) {
             val keys = pendingCancels.toList()
             pendingCancels.removeAll(keys)
             keys.forEach { runCatching { cancelNotification(it) } }
+            android.util.Log.i("NCWatch", "pendingCancels flushed: ${keys.size}")
         }
         // 追溯处理：监听断线期间弹出的通知不会触发回调，重连后扫一遍通知栏补处理（1.1.8）
         runCatching {
-            activeNotifications?.forEach { sbn -> onNotificationPosted(sbn) }
+            val active = activeNotifications
+            android.util.Log.i("NCWatch", "backfill scan: ${active?.size ?: -1} active notifications")
+            active?.forEach { sbn -> onNotificationPosted(sbn) }
         }
         KeepAliveService.start(this)
     }
@@ -169,12 +176,14 @@ class CleanerListenerService : NotificationListenerService() {
     override fun onListenerDisconnected() {
         // 1.1.11 修复：断线必须先落标志，否则看门狗用实例存在误判"已连接"，永远不会自愈重绑
         listenerConnected = false
+        android.util.Log.w("NCWatch", "listener DISCONNECTED — requesting rebind")
         // 监听断线（进程被杀后系统回收绑定）→ 自愈重绑（Plan.md §7.1）
         requestRebindCompat(this)
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
+        android.util.Log.w("NCWatch", "listener onDestroy")
         if (activeInstance === this) activeInstance = null
         appScope?.cancel()
         appScope = null
@@ -183,6 +192,7 @@ class CleanerListenerService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == SELF_PACKAGE) return
+        android.util.Log.i("NCWatch", "posted pkg=${sbn.packageName} connected=$listenerConnected")
         val notification: Notification = sbn.notification ?: return
         if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val extras = notification.extras
@@ -266,7 +276,12 @@ class CleanerListenerService : NotificationListenerService() {
         if (decision == DECISION_FILTERED_BY_AI || decision == DECISION_FILTERED_BY_RULE) {
             // 清除失败（时机过早等）也记入待取消队列，重连时补撤（1.1.11 兜底）
             val ok = runCatching { cancelNotification(sbn.key) }.isSuccess
-            if (!ok) pendingCancels.add(sbn.key)
+            if (!ok) {
+                android.util.Log.w("NCWatch", "cancel failed, queued: $decision ${sbn.key.takeLast(12)}")
+                pendingCancels.add(sbn.key)
+            } else {
+                android.util.Log.i("NCWatch", "filtered+$decision p=$probability")
+            }
         }
 
         // ---- 入库（1.1.6：按槽位 key 去重 + 互斥，防并发双插）----

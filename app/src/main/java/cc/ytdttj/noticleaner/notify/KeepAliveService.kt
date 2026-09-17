@@ -44,11 +44,13 @@ class KeepAliveService : Service() {
     /** 亮屏/解锁自愈（1.1.13）：Doze 期间积压的重绑需求在亮屏瞬间补做 */
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            android.util.Log.i("NCWatch", "screen event ${intent.action}")
             runCatching {
                 if (CleanerListenerService.isListenerEnabled(context) &&
                     !CleanerListenerService.isListenerConnected()
                 ) {
                     CleanerListenerService.requestRebindIfEnabled(context)
+                    android.util.Log.i("NCWatch", "screen event → rebind requested")
                 }
             }
         }
@@ -58,6 +60,7 @@ class KeepAliveService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        android.util.Log.i("NCWatch", "keepalive FGS onCreate uptime=${android.os.SystemClock.elapsedRealtime()}")
         val nm = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             nm.createNotificationChannel(
