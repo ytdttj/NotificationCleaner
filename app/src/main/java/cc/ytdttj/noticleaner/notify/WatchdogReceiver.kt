@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
+import kotlinx.coroutines.launch
 
 /**
  * 闹钟看门狗（1.1.13）：协程看门狗在 Doze 下会被挂起（长锁屏期间监听断线无人重绑，
@@ -58,6 +59,21 @@ class WatchdogReceiver : BroadcastReceiver() {
             runCatching { KeepAliveService.start(context) }
                 .onFailure { Log.w(TAG, "fgs restart rejected: $it") }
         }
+
+        // 1.2.0（ImprovePlan P0-2）：顺带清理过期通知——闹钟 9 分钟天然节流 + Doze 免疫，
+        // 修复长驻进程下 purgeExpired 只在服务 onCreate 执行一次导致的 DB 无限膨胀
+        val result = goAsync()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                runCatching {
+                    cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao()
+                        .purgeExpired(System.currentTimeMillis())
+                }.onFailure { Log.w(TAG, "purgeExpired failed: $it") }
+            } finally {
+                result.finish()
+            }
+        }
+
         // 自续约（KeepAliveService 存活期间由它启动；服务被杀后本接收器仍可维持链条）
         schedule(context)
     }

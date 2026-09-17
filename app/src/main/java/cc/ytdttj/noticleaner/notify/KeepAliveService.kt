@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 
 /**
@@ -85,6 +86,8 @@ class KeepAliveService : Service() {
         runCatching { startForeground(NOTIF_ID, buildNotification(0, 0, false)) }
 
         // 累计拦截统计 + 多任务隐藏开关：任一变化 → 重建常驻通知（Intent 携带正确的隐藏 flag）
+        // 1.2.0（ImprovePlan P2-7）：conflate + 1s 节流——拦截风暴时最多每秒刷新一次常驻通知，
+        // 减少对其它监听 APP（弹幕类）的噪声 onNotificationPosted 广播
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { s ->
             s.launch {
                 combine(
@@ -92,11 +95,13 @@ class KeepAliveService : Service() {
                     ServiceLocator.settings.filteredRuleCount,
                     ServiceLocator.settings.excludeFromRecents,
                 ) { a, r, e -> Triple(a, r, e) }
+                    .conflate()
                     .collect { (a, r, e) ->
                         runCatching {
                             getSystemService(NotificationManager::class.java)
                                 .notify(NOTIF_ID, buildNotification(a, r, e))
                         }
+                        kotlinx.coroutines.delay(1_000)
                     }
             }
             // 协程看门狗（1.1.11：间隔 60s→30s）：亮屏期间的快速自愈路径；

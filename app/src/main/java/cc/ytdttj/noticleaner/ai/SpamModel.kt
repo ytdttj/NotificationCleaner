@@ -39,8 +39,25 @@ class SpamModel(
      */
     fun score(rawText: String, channelKey: Int?): Double {
         if (channelKey == null || channelKey == 0) return score(rawText)
-        val counts = FeatureHasher.counts(rawText)
-        var z = bias + weights[channelKey].toDouble()
+        return scoreWithChannel(FeatureHasher.counts(rawText), weights[channelKey].toDouble())
+    }
+
+    /**
+     * 带通道偏置的打分（1.2.0，ImprovePlan P1-2）：接收**已归一化**文本，
+     * 供决策热路径复用 hardAllow 检查时的 normalize 结果（消除重复 normalize）。
+     * 与 [score] 传同一原始文本的结果完全一致（counts 的构建方式相同）。
+     */
+    fun scoreNormalized(normalizedText: String, channelKey: Int?): Double {
+        val counts = FeatureHasher.countsOfNormalized(normalizedText)
+        if (channelKey == null || channelKey == 0) {
+            return scoreWithCounts(weights, bias, counts)
+        }
+        return scoreWithChannel(counts, weights[channelKey].toDouble())
+    }
+
+    /** 通道偏置 + 文本特征打分（通道权重不计入 L2 归一化，避免被稀释） */
+    private fun scoreWithChannel(counts: Map<Int, Int>, channelWeight: Double): Double {
+        var z = bias + channelWeight
         if (counts.isEmpty()) return sigmoid(z)
         var normSq = 0.0
         for (c in counts.values) normSq += c.toDouble() * c.toDouble()
@@ -90,8 +107,11 @@ class SpamModel(
         }
 
         /** 参考打分（与 Python score_text 一致）：Double 累加，w 为反量化 float32 */
-        fun scoreWith(weights: FloatArray, bias: Double, rawText: String): Double {
-            val counts = FeatureHasher.counts(rawText)
+        fun scoreWith(weights: FloatArray, bias: Double, rawText: String): Double =
+            scoreWithCounts(weights, bias, FeatureHasher.counts(rawText))
+
+        /** 计数向量打分核心（Double 累加顺序与 Python 参考实现一致） */
+        private fun scoreWithCounts(weights: FloatArray, bias: Double, counts: Map<Int, Int>): Double {
             if (counts.isEmpty()) return sigmoid(bias)
             var normSq = 0.0
             for (c in counts.values) normSq += c.toDouble() * c.toDouble()

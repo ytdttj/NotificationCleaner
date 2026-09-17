@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
@@ -24,6 +25,33 @@ class SettingsRepository(private val context: Context) {
     private val keyFilteredAi = intPreferencesKey("filtered_ai_count")
     private val keyFilteredRule = intPreferencesKey("filtered_rule_count")
     private val keyOnboardingDone = booleanPreferencesKey("onboarding_done")
+
+    // ---- 1.2.0（ImprovePlan P2-2）：拦截计数内存累积 + 500ms 批量落盘 ----
+    // 拦截风暴（一次弹 N 条广告）时不再逐条全文件读改写 DataStore。
+    // 常驻 ticker 只在有待写数据时 edit，进程被杀最多丢 500ms 窗口内的计数（仅展示用，可接受）。
+    private val pendingAi = java.util.concurrent.atomic.AtomicInteger()
+    private val pendingRule = java.util.concurrent.atomic.AtomicInteger()
+
+    private val countFlushScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+    )
+
+    init {
+        countFlushScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(500)
+                val ai = pendingAi.getAndSet(0)
+                val rule = pendingRule.getAndSet(0)
+                if (ai == 0 && rule == 0) continue
+                runCatching {
+                    context.dataStore.edit {
+                        if (ai > 0) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + ai
+                        if (rule > 0) it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + rule
+                    }
+                }
+            }
+        }
+    }
 
     val threshold: Flow<Float> = context.dataStore.data.map { it[keyThreshold] ?: 0.8f }
     val interceptMode: Flow<Boolean> = context.dataStore.data.map { it[keyIntercept] ?: true }
@@ -55,10 +83,8 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[keyOnboardingDone] = true }
     }
 
-    suspend fun incrementFiltered(ai: Boolean) {
-        context.dataStore.edit {
-            if (ai) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + 1
-            else it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + 1
-        }
+    /** 累计拦截计数：先入内存累积器，由后台 ticker 每 500ms 批量落盘（P2-2 防抖） */
+    fun incrementFiltered(ai: Boolean) {
+        (if (ai) pendingAi else pendingRule).incrementAndGet()
     }
 }

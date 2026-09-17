@@ -31,19 +31,55 @@ class ModelRepository(private val context: Context) {
     @Volatile
     private var effective: SpamModel? = null
 
+    /**
+     * 模型代数（1.2.0，ImprovePlan P1-3）：effective 每次重建时 +1，
+     * 打分缓存以 (epoch, pkg, text, channel) 为键——模型更新后旧条目自然失效。
+     */
+    @Volatile
+    private var modelEpoch = 0L
+
+    /** 打分结果 LRU（P1-3：同文本重复推送免重复推理；64 条上限，键含文本，内存约几十 KB） */
+    private val scoreCache = object : LinkedHashMap<String, Double>(SCORE_CACHE_MAX, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Double>): Boolean =
+            size > SCORE_CACHE_MAX
+    }
+
     /** 内置基线模型（只读）；assets 缺失或损坏时为 null。 */
     suspend fun baseModel(): SpamModel? = mutex.withLock { loadBase() }
 
-    /** 当前生效模型（base + 学习修正）；不可用时为 null。 */
-    suspend fun get(): SpamModel? = mutex.withLock {
-        effective ?: run {
-            val b = loadBase() ?: return@run null
-            val d = runCatching { readDelta() }.getOrNull()
-            (if (d != null) b.withDelta(d) else b).also { effective = it }
+    /** 当前生效模型（base + 学习修正）；不可用时为 null。P2-1：双检免锁，命中时无 Mutex 开销 */
+    suspend fun get(): SpamModel? {
+        effective?.let { return it }
+        return mutex.withLock {
+            effective ?: run {
+                val b = loadBase() ?: return@run null
+                val d = runCatching { readDelta() }.getOrNull()
+                (if (d != null) b.withDelta(d) else b).also { setEffective(it) }
+            }
         }
     }
 
     fun getBlocking(): SpamModel? = kotlinx.coroutines.runBlocking { get() }
+
+    /**
+     * 打分（1.2.0，ImprovePlan P1-2/P1-3）：复用调用方已 normalize 的文本，
+     * 结果带 LRU 缓存（键含模型代数，模型更新后自动失效）。
+     * @return 概率；模型不可用时为 null（调用方按 0.0 处理）
+     */
+    suspend fun scoreCached(pkg: String, normalizedText: String, channelKey: Int?): Double? {
+        val model = get() ?: return null
+        val key = "$modelEpoch\u0000$pkg\u0000$normalizedText\u0000${channelKey ?: 0}"
+        synchronized(scoreCache) { scoreCache[key] }?.let { return it }
+        val p = model.scoreNormalized(normalizedText, channelKey)
+        synchronized(scoreCache) { scoreCache[key] = p }
+        return p
+    }
+
+    /** effective 更新统一走此函数（同步刷新打分缓存代数） */
+    private fun setEffective(model: SpamModel?) {
+        effective = model
+        modelEpoch++
+    }
 
     /** 基线模型指纹（用于判断标注是否需要重新拟合）。 */
     suspend fun baseFingerprint(): Long = baseModel()?.fingerprint ?: 0L
@@ -65,7 +101,7 @@ class ModelRepository(private val context: Context) {
             if (delta.isEmpty) deltaFile.delete() else deltaFile.writeBytes(delta.encode())
         }
         val b = loadBase() ?: return@withLock
-        effective = b.withDelta(delta)
+        setEffective(b.withDelta(delta))
     }
 
     /** 重置：删除学习修正，回到内置基线（标注由调用方决定是否清空）。 */
@@ -77,7 +113,7 @@ class ModelRepository(private val context: Context) {
             File(context.filesDir, "model/model.bin").delete()
             File(context.filesDir, "model/learn_count").delete()
         }
-        effective = loadBase()
+        setEffective(loadBase())
     }
 
     private fun readDelta(): SpamDelta? {
@@ -90,4 +126,9 @@ class ModelRepository(private val context: Context) {
     }.onFailure {
         android.util.Log.e("ModelRepository", "内置模型加载失败", it)
     }.getOrNull()
+
+    companion object {
+        /** 打分 LRU 上限（ImprovePlan P1-3） */
+        private const val SCORE_CACHE_MAX = 64
+    }
 }

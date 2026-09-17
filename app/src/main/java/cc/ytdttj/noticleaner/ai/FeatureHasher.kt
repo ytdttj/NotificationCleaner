@@ -53,8 +53,15 @@ object FeatureHasher {
     }
 
     /** 文本 → (index, count) 原始计数（未 L2 归一化） */
-    fun counts(rawText: String): Map<Int, Int> {
-        val units = normalize(rawText).toByteArray(Charsets.UTF_16LE)
+    fun counts(rawText: String): Map<Int, Int> = countsOfNormalized(normalize(rawText))
+
+    /**
+     * 已归一化文本 → (index, count) 原始计数（1.2.0，ImprovePlan P1-2）：
+     * 决策热路径先 normalize 做 hardAllow 检查，复用结果直接取 n-gram 计数，
+     * 消除 [counts] 内部的第二次 normalize。与 [counts] 对同一文本结果完全一致。
+     */
+    fun countsOfNormalized(normalizedText: String): Map<Int, Int> {
+        val units = normalizedText.toByteArray(Charsets.UTF_16LE)
         val nUnits = units.size / 2
         val mask = BUCKETS - 1
         val counts = HashMap<Int, Int>()

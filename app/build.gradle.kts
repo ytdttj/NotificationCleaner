@@ -14,8 +14,8 @@ android {
         applicationId = "cc.ytdttj.noticleaner"
         minSdk = 26
         targetSdk = 36
-        versionCode = 22
-        versionName = "1.1.14"
+        versionCode = 23
+        versionName = "1.2.0"
     }
 
     buildTypes {

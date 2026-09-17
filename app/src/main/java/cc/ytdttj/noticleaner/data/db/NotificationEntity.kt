@@ -18,8 +18,19 @@ const val DECISION_ONGOING = "ONGOING" // 常驻通知（进度条、来电）
 /**
  * 通知历史（Plan.md §4）。
  * expireAt = postTime + 7 天；learned=true 的通知永久保留（查询时忽略 expireAt）。
+ *
+ * 索引（ImprovePlan P0-1）：决策热路径每条通知必查 findByKey / findRecentDuplicate，
+ * 且 purgeExpired / listLearnedOnce 按条件过滤——无索引时全部全表扫描。
  */
-@Entity(tableName = "notifications")
+@Entity(
+    tableName = "notifications",
+    indices = [
+        androidx.room.Index("key"),
+        androidx.room.Index("packageName", "title", "content", "postTime"),
+        androidx.room.Index("expireAt"),
+        androidx.room.Index("learned"),
+    ],
+)
 data class NotificationEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val packageName: String,

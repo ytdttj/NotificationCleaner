@@ -99,9 +99,16 @@ class CleanerListenerService : NotificationListenerService() {
         @Volatile
         private var appScope: CoroutineScope? = null
 
+        /**
+         * 1.2.0（ImprovePlan P1-5）：通知处理独立限流调度器——风暴/补扫时最多 2 条并发，
+         * 其余排队（近似 FIFO），不再打满 Dispatchers.Default（缓解对其它监听 APP 的 CPU 挤压）
+         */
+        private var handleDispatcher: kotlinx.coroutines.CoroutineDispatcher? = null
+
         fun initScope(context: Context) {
             if (appScope == null) {
                 appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                handleDispatcher = Dispatchers.Default.limitedParallelism(2)
                 // 设置项持续同步到内存，决策路径零 IO
                 appScope!!.launch {
                     ServiceLocator.settings.threshold.collect { cachedThreshold = it }
@@ -204,16 +211,19 @@ class CleanerListenerService : NotificationListenerService() {
         if (title.isEmpty() && text.isEmpty()) return
 
         // 1.1.13：灭屏瞬间 CPU 可能被挂起导致打分/入库中断，短超时部分唤醒锁保证处理完成
+        // 1.2.0（ImprovePlan P1-4）：仅灭屏时加锁——亮屏时 CPU 本就唤醒，无需锁
         runCatching {
             val pm = getSystemService(android.os.PowerManager::class.java)
-            pm?.newWakeLock(
-                android.os.PowerManager.PARTIAL_WAKE_LOCK,
-                "NotiCleaner:handle",
-            )?.acquire(10_000)
+            if (pm?.isInteractive == false) {
+                pm.newWakeLock(
+                    android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                    "NotiCleaner:handle",
+                )?.acquire(10_000)
+            }
         }
 
         val scope = appScope ?: return
-        scope.launch { handle(sbn, title, text) }
+        scope.launch(handleDispatcher ?: Dispatchers.Default) { handle(sbn, title, text) }
     }
 
     private suspend fun handle(sbn: StatusBarNotification, title: String, content: String) {
@@ -229,6 +239,17 @@ class CleanerListenerService : NotificationListenerService() {
 
         val postTime = sbn.postTime
         val joined = listOf(title, content).filter { it.isNotEmpty() }.joinToString("\n")
+
+        // 1.2.0（ImprovePlan P1-6）：重连补扫快路径——槽位已入库且标题/内容/时间未变 → 整体跳过，
+        // 消除重连 backfill 风暴的重复推理与写库（正式查重在下方 insertMutex 内，此处仅无锁预检）
+        val preExisting = runCatching { dao.findByKey(sbn.key) }.getOrNull()
+        if (preExisting != null &&
+            preExisting.title == title &&
+            preExisting.content == content &&
+            preExisting.postTime == postTime
+        ) {
+            return
+        }
 
         // ---- 决策（1.0.7：阈值/拦截模式走内存缓存，热路径零 IO）----
         var decision = DECISION_PASSED
@@ -251,12 +272,13 @@ class CleanerListenerService : NotificationListenerService() {
                         if (!hardAllow) {
                             // 模型不可用（assets 缺失/损坏）时跳过打分，按放行处理
                             // 1.1.11：带通道偏置打分（同 App 同渠道的学习成果直接生效）
+                            // 1.2.0（ImprovePlan P1-2/P1-3）：复用已 normalize 文本 + 打分 LRU 缓存
                             val chKey = if (channel.isNotEmpty()) {
                                 cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(pkg, channel)
                             } else {
                                 null
                             }
-                            val p0 = modelRepo.get()?.score(joined, chKey) ?: 0.0
+                            val p0 = modelRepo.scoreCached(pkg, normalized, chKey) ?: 0.0
                             // 1.1.11：">"/">>" 强广告标记（覆盖全角 ＞），命中抬到 0.95
                             val p = if (joined.contains('>') || joined.contains('＞')) {
                                 maxOf(p0, SPAM_MARK_BOOST)
