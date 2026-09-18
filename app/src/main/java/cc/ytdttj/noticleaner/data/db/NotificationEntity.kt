@@ -9,11 +9,24 @@ const val DECISION_FILTERED_BY_AI = "FILTERED_BY_AI"
 const val DECISION_FILTERED_BY_RULE = "FILTERED_BY_RULE"
 const val DECISION_MANUAL_MARKED_AD = "MANUAL_MARKED_AD"
 
+// 1.2.1：LSPosed 模块端入队前拦截的决策（system_server 内判定，通知不会到达 NLS）
+const val DECISION_FILTERED_BY_AI_MODULE = "FILTERED_BY_AI_MODULE"
+const val DECISION_FILTERED_BY_RULE_MODULE = "FILTERED_BY_RULE_MODULE"
+
 // 保护型决策：默认不参与过滤，仅入库留档并在 UI 标注来源
 const val DECISION_WHITELIST = "WHITELIST" // 白名单 APP（跳过 AI 过滤，规则仍生效）
 const val DECISION_MEDIA = "MEDIA" // 媒体通知（音乐/视频播放控件）
 const val DECISION_CONVERSATION = "CONVERSATION" // 对话通知（MessagingStyle 等）
 const val DECISION_ONGOING = "ONGOING" // 常驻通知（进度条、来电）
+
+/** 拦截类决策全集（NLS 端 + 模块端，1.2.1）：历史"已过滤"筛选与统计计数使用 */
+val FILTERED_DECISIONS = setOf(
+    DECISION_FILTERED_BY_AI,
+    DECISION_FILTERED_BY_AI_MODULE,
+    DECISION_FILTERED_BY_RULE,
+    DECISION_FILTERED_BY_RULE_MODULE,
+    DECISION_MANUAL_MARKED_AD,
+)
 
 /**
  * 通知历史（Plan.md §4）。

@@ -1,4 +1,4 @@
-﻿package cc.ytdttj.noticleaner.ui.settings
+package cc.ytdttj.noticleaner.ui.settings
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -57,10 +57,14 @@ sealed class StatsMode(val key: String) {
 }
 
 class StatsDetailViewModel(private val dao: NotificationDao) : ViewModel() {
-    val filtered = dao.listByDecision(DECISION_FILTERED_BY_AI).stateIn(
+    val filtered = dao.listByDecisions(
+        listOf("FILTERED_BY_AI", "FILTERED_BY_AI_MODULE"),
+    ).stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList(),
     )
-    val filteredByRule = dao.listByDecision(DECISION_FILTERED_BY_RULE).stateIn(
+    val filteredByRule = dao.listByDecisions(
+        listOf("FILTERED_BY_RULE", "FILTERED_BY_RULE_MODULE"),
+    ).stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList(),
     )
     val learned = dao.listLearned().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -113,8 +117,8 @@ fun StatsDetailScreen(
                                 Text(detailTimeFmt.format(Date(n.postTime)), style = MaterialTheme.typography.labelSmall)
                                 Spacer(Modifier.weight(1f))
                                 val reason = when (n.decision) {
-                                    DECISION_FILTERED_BY_AI -> "AI ${(n.adProbability * 100).toInt()}%"
-                                    DECISION_FILTERED_BY_RULE -> "规则"
+                                    "FILTERED_BY_AI", "FILTERED_BY_AI_MODULE" -> "AI ${(n.adProbability * 100).toInt()}%"
+                                    "FILTERED_BY_RULE", "FILTERED_BY_RULE_MODULE" -> "规则"
                                     DECISION_MANUAL_MARKED_AD -> "手动学习"
                                     else -> ""
                                 }

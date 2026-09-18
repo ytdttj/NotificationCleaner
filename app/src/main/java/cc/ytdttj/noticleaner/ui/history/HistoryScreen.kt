@@ -47,7 +47,9 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import cc.ytdttj.noticleaner.ServiceLocator
 import cc.ytdttj.noticleaner.data.db.DECISION_CONVERSATION
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI
+import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI_MODULE
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_RULE
+import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_RULE_MODULE
 import cc.ytdttj.noticleaner.data.db.DECISION_MANUAL_MARKED_AD
 import cc.ytdttj.noticleaner.data.db.DECISION_MEDIA
 import cc.ytdttj.noticleaner.data.db.DECISION_ONGOING
@@ -248,8 +250,9 @@ private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
                     Text(timeFmt.format(Date(n.postTime)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                     Spacer(Modifier.weight(1f))
                     when (n.decision) {
-                        DECISION_FILTERED_BY_AI -> Badge { Text("AI过滤 ${(n.adProbability * 100).toInt()}%") }
-                        DECISION_FILTERED_BY_RULE -> Badge { Text("规则过滤") }
+                        DECISION_FILTERED_BY_AI, DECISION_FILTERED_BY_AI_MODULE ->
+                            Badge { Text("AI过滤 ${(n.adProbability * 100).toInt()}%") }
+                        DECISION_FILTERED_BY_RULE, DECISION_FILTERED_BY_RULE_MODULE -> Badge { Text("规则过滤") }
                         DECISION_MANUAL_MARKED_AD -> Badge { Text("已学习广告") }
                         DECISION_WHITELIST -> Text("白名单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         DECISION_MEDIA -> Text("媒体", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)

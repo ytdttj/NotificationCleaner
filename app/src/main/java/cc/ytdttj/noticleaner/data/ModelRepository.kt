@@ -32,6 +32,14 @@ class ModelRepository(private val context: Context) {
     private var effective: SpamModel? = null
 
     /**
+     * delta 版本（1.2.1）：学习修正每次变化时刷新（时间戳），推送给模块触发热重载。
+     * 初始值：delta 文件已存在则为 1（模块 attach 时按此加载既有 delta），无则 0。
+     */
+    val deltaVersion = kotlinx.coroutines.flow.MutableStateFlow(
+        if (deltaFile.exists()) 1L else 0L,
+    )
+
+    /**
      * 模型代数（1.2.0，ImprovePlan P1-3）：effective 每次重建时 +1，
      * 打分缓存以 (epoch, pkg, text, channel) 为键——模型更新后旧条目自然失效。
      */
@@ -102,6 +110,7 @@ class ModelRepository(private val context: Context) {
         }
         val b = loadBase() ?: return@withLock
         setEffective(b.withDelta(delta))
+        deltaVersion.value = System.currentTimeMillis()
     }
 
     /** 重置：删除学习修正，回到内置基线（标注由调用方决定是否清空）。 */
@@ -114,6 +123,7 @@ class ModelRepository(private val context: Context) {
             File(context.filesDir, "model/learn_count").delete()
         }
         setEffective(loadBase())
+        deltaVersion.value = 0L
     }
 
     private fun readDelta(): SpamDelta? {

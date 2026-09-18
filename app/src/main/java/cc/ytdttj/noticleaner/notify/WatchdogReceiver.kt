@@ -22,18 +22,36 @@ class WatchdogReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "NCWatch"
         private const val REQUEST_CODE = 2001
-        private const val INTERVAL_MS = 9 * 60 * 1000L
 
-        /** 启动/续约闹钟；exact 被拒绝（未授予精确闹钟）时自动退化为非精确 */
+        /** 未获电池豁免：Doze 下 allow-while-idle 系统节流约 9 分钟，再短无意义 */
+        private const val INTERVAL_DEFAULT_MS = 9 * 60 * 1000L
+
+        /**
+         * 已获电池豁免：allow-while-idle 最小窗口仅 10s（ALLOW_WHILE_IDLE_WHITELIST_MIN_TIME），
+         * 闹钟不受 Doze 节流 → 断连检测窗口压到 30s（1.2.1，普通用户最大杠杆）
+         */
+        private const val INTERVAL_EXEMPT_MS = 30 * 1000L
+
+        /** 摘除写回强制修复的最小间隔（1.2.1） */
+        private const val REPAIR_THROTTLE_MS = 30 * 60 * 1000L
+
+        /** 连续断连触发计数（跨 onReceive 保留，进程死亡归零——死亡自愈靠 NMS 自动重绑） */
+        private var consecutiveDisconnected = 0
+        private var lastRepairAt = 0L
+
+        /** 启动/续约闹钟；间隔按电池豁免状态自适应，exact 被拒时自动退化为非精确 */
         fun schedule(context: Context) {
             val am = context.getSystemService(AlarmManager::class.java) ?: return
+            val exempt = context.getSystemService(android.os.PowerManager::class.java)
+                ?.isIgnoringBatteryOptimizations(context.packageName) == true
+            val interval = if (exempt) INTERVAL_EXEMPT_MS else INTERVAL_DEFAULT_MS
             val pi = PendingIntent.getBroadcast(
                 context,
                 REQUEST_CODE,
                 Intent(context, WatchdogReceiver::class.java),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val triggerAt = SystemClock.elapsedRealtime() + INTERVAL_MS
+            val triggerAt = SystemClock.elapsedRealtime() + interval
             val exact = runCatching {
                 am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
             }.isSuccess
@@ -42,7 +60,7 @@ class WatchdogReceiver : BroadcastReceiver() {
                     am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
                 }
             }
-            Log.i(TAG, "alarm scheduled exact=$exact at=$triggerAt")
+            Log.i(TAG, "alarm scheduled exact=$exact exempt=$exempt interval=${interval / 1000}s")
         }
     }
 
@@ -58,6 +76,35 @@ class WatchdogReceiver : BroadcastReceiver() {
             // （受 FGS 后台启动限制时抛异常，忽略：重绑请求已发出）
             runCatching { KeepAliveService.start(context) }
                 .onFailure { Log.w(TAG, "fgs restart rejected: $it") }
+            // 1.2.1：连续 2 次触发仍断连 → Shizuku 可用时做"摘除写回"强制重绑（30 分钟节流；
+            // 仅 Shizuku——Root 后台自动执行会弹 su 授权打扰用户，Root 修复走设置页手动按钮）
+            consecutiveDisconnected++
+            val now = SystemClock.elapsedRealtime()
+            if (consecutiveDisconnected >= 2 && now - lastRepairAt > REPAIR_THROTTLE_MS) {
+                val shizukuUsable = runCatching {
+                    rikka.shizuku.Shizuku.pingBinder() &&
+                        rikka.shizuku.Shizuku.checkSelfPermission() ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                }.getOrDefault(false)
+                if (shizukuUsable) {
+                    lastRepairAt = now
+                    consecutiveDisconnected = 0
+                    Log.i(TAG, "listener still disconnected → shizuku listener repair")
+                    val result = goAsync()
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        try {
+                            val log = ListenerRepair.repair(ShizukuExecutor)
+                            Log.i(TAG, "listener repair done:\n$log")
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "listener repair failed: $t")
+                        } finally {
+                            result.finish()
+                        }
+                    }
+                }
+            }
+        } else {
+            consecutiveDisconnected = 0
         }
 
         // 1.2.0（ImprovePlan P0-2）：顺带清理过期通知——闹钟 9 分钟天然节流 + Doze 免疫，

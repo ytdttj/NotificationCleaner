@@ -72,12 +72,7 @@ class CleanerListenerService : NotificationListenerService() {
             }
         }
 
-        /** 硬放行词表：误杀代价极高，内容命中直接 PASSED（Plan.md §5.6 护栏） */
-        private val HARD_ALLOW_WORDS =
-            listOf("验证码", "动态码", "校验码", "OTP", "verification code", "one-time")
-
-        /** 强广告标记（1.1.11）：通知内容含 ">" / ">>"（含全角）极大概率为广告，概率抬到 0.95 */
-        private const val SPAM_MARK_BOOST = 0.95
+        /** 硬放行词表与强广告抬升常量迁移至 [FilterGuards]（1.2.1：NLS 与模块端共用） */
 
         private val EXPIRE_MS = TimeUnit.DAYS.toMillis(7)
         private val DEDUP_WINDOW_MS = TimeUnit.SECONDS.toMillis(60)
@@ -100,15 +95,19 @@ class CleanerListenerService : NotificationListenerService() {
         private var appScope: CoroutineScope? = null
 
         /**
-         * 1.2.0（ImprovePlan P1-5）：通知处理独立限流调度器——风暴/补扫时最多 2 条并发，
-         * 其余排队（近似 FIFO），不再打满 Dispatchers.Default（缓解对其它监听 APP 的 CPU 挤压）
+         * 1.2.0（ImprovePlan P1-5）：通知处理独立限流调度器——风暴/补扫时不再打满
+         * Dispatchers.Default（缓解对其它监听 APP 的 CPU 挤压）
+         * 1.2.1：拆分为实时 / 补扫双通道——backfill 只占 1 通道慢消化，
+         * 重连补扫不再排队阻塞实时通知（重连后延迟的直接修复）
          */
-        private var handleDispatcher: kotlinx.coroutines.CoroutineDispatcher? = null
+        private var realtimeDispatcher: kotlinx.coroutines.CoroutineDispatcher? = null
+        private var backfillDispatcher: kotlinx.coroutines.CoroutineDispatcher? = null
 
         fun initScope(context: Context) {
             if (appScope == null) {
                 appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-                handleDispatcher = Dispatchers.Default.limitedParallelism(2)
+                realtimeDispatcher = Dispatchers.Default.limitedParallelism(2)
+                backfillDispatcher = Dispatchers.Default.limitedParallelism(1)
                 // 设置项持续同步到内存，决策路径零 IO
                 appScope!!.launch {
                     ServiceLocator.settings.threshold.collect { cachedThreshold = it }
@@ -172,10 +171,11 @@ class CleanerListenerService : NotificationListenerService() {
             android.util.Log.i("NCWatch", "pendingCancels flushed: ${keys.size}")
         }
         // 追溯处理：监听断线期间弹出的通知不会触发回调，重连后扫一遍通知栏补处理（1.1.8）
+        // 1.2.1：补扫走独立慢速通道（backfillDispatcher），不与实时通知抢并发
         runCatching {
             val active = activeNotifications
             android.util.Log.i("NCWatch", "backfill scan: ${active?.size ?: -1} active notifications")
-            active?.forEach { sbn -> onNotificationPosted(sbn) }
+            active?.forEach { sbn -> dispatch(sbn, fromBackfill = true) }
         }
         KeepAliveService.start(this)
     }
@@ -198,8 +198,13 @@ class CleanerListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        dispatch(sbn, fromBackfill = false)
+    }
+
+    /** 实时回调与重连补扫共用入口；fromBackfill 决定走慢速补扫通道（1.2.1） */
+    private fun dispatch(sbn: StatusBarNotification, fromBackfill: Boolean) {
         if (sbn.packageName == SELF_PACKAGE) return
-        android.util.Log.i("NCWatch", "posted pkg=${sbn.packageName} connected=$listenerConnected")
+        android.util.Log.i("NCWatch", "posted pkg=${sbn.packageName} connected=$listenerConnected backfill=$fromBackfill")
         val notification: Notification = sbn.notification ?: return
         if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val extras = notification.extras
@@ -223,10 +228,16 @@ class CleanerListenerService : NotificationListenerService() {
         }
 
         val scope = appScope ?: return
-        scope.launch(handleDispatcher ?: Dispatchers.Default) { handle(sbn, title, text) }
+        val dispatcher = if (fromBackfill) backfillDispatcher else realtimeDispatcher
+        scope.launch(dispatcher ?: Dispatchers.Default) { handle(sbn, title, text, fromBackfill) }
     }
 
-    private suspend fun handle(sbn: StatusBarNotification, title: String, content: String) {
+    private suspend fun handle(
+        sbn: StatusBarNotification,
+        title: String,
+        content: String,
+        fromBackfill: Boolean,
+    ) {
         val locator = ServiceLocator
         val dao: NotificationDao = locator.db.notificationDao()
         val modelRepo: ModelRepository = locator.modelRepo
@@ -268,7 +279,7 @@ class CleanerListenerService : NotificationListenerService() {
                     else -> {
                         val normalized = cc.ytdttj.noticleaner.ai.FeatureHasher.normalize(joined)
                         val hardAllow = normalized.length < 4 ||
-                            HARD_ALLOW_WORDS.any { joined.contains(it, ignoreCase = true) }
+                            FilterGuards.HARD_ALLOW_WORDS.any { joined.contains(it, ignoreCase = true) }
                         if (!hardAllow) {
                             // 模型不可用（assets 缺失/损坏）时跳过打分，按放行处理
                             // 1.1.11：带通道偏置打分（同 App 同渠道的学习成果直接生效）
@@ -281,7 +292,7 @@ class CleanerListenerService : NotificationListenerService() {
                             val p0 = modelRepo.scoreCached(pkg, normalized, chKey) ?: 0.0
                             // 1.1.11：">"/">>" 强广告标记（覆盖全角 ＞），命中抬到 0.95
                             val p = if (joined.contains('>') || joined.contains('＞')) {
-                                maxOf(p0, SPAM_MARK_BOOST)
+                                maxOf(p0, FilterGuards.SPAM_MARK_BOOST)
                             } else {
                                 p0
                             }

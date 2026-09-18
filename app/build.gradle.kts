@@ -8,14 +8,15 @@ plugins {
 
 android {
     namespace = "cc.ytdttj.noticleaner"
-    compileSdk = 36
+    // 1.2.1：libxposed service 102 要求 compileSdk ≥ 37（仅编译期，targetSdk 保持 36）
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "cc.ytdttj.noticleaner"
         minSdk = 26
         targetSdk = 36
-        versionCode = 23
-        versionName = "1.2.0"
+        versionCode = 24
+        versionName = "1.2.1"
     }
 
     buildTypes {
@@ -46,6 +47,11 @@ android {
             "\"https://github.com/ytdttj/NotificationCleaner/releases/download\"")
         buildConfigField("String", "UPDATE_APK_GITEE",
             "\"https://gitee.com/ytdttj/NotiCleaner/releases/download\"")
+    }
+    sourceSets {
+        // 1.2.1：assets 同时打包为 classpath resources——LSPosed 模块端（system_server）
+        // 经 classLoader.getResourceAsStream("model/model.bin") 读取内置模型
+        getByName("main").resources.srcDir("src/main/assets")
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
@@ -78,9 +84,11 @@ dependencies {
     // Shizuku（用户主动启用时才请求授权）
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
-    // LSPosed Modern API（libxposed API 102）：仅编译期，运行时由 LSPosed 提供（不打入 APK）
+    // LSPosed Modern API（libxposed API 102）：模块端仅编译期，运行时由 LSPosed 提供（不打入 APK）
     compileOnly("io.github.libxposed:api:102.0.0")
     compileOnly("io.github.libxposed:annotation:1.0.0")
+    // APP 侧框架服务（1.2.1）：模块激活检测 + delta 远程文件通道
+    implementation("io.github.libxposed:service:102.0.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")

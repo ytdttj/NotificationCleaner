@@ -9,6 +9,7 @@ import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_RULE
 import cc.ytdttj.noticleaner.data.db.DECISION_MANUAL_MARKED_AD
 import cc.ytdttj.noticleaner.data.db.DECISION_PASSED
+import cc.ytdttj.noticleaner.data.db.FILTERED_DECISIONS
 import cc.ytdttj.noticleaner.data.db.NotificationDao
 import cc.ytdttj.noticleaner.data.db.NotificationEntity
 import kotlinx.coroutines.Dispatchers
@@ -43,21 +44,9 @@ class HistoryViewModel(
         combine(dao.listAll(), filter, search) { all, f, q ->
             val base = when (f) {
                 HistoryFilter.ALL -> all
-                HistoryFilter.FILTERED -> all.filter {
-                    it.decision in setOf(
-                        DECISION_FILTERED_BY_AI,
-                        DECISION_FILTERED_BY_RULE,
-                        DECISION_MANUAL_MARKED_AD,
-                    )
-                }
+                HistoryFilter.FILTERED -> all.filter { it.decision in FILTERED_DECISIONS }
                 // "正常"= 未被过滤（含白名单/媒体/会话/常驻等保护型通知）
-                HistoryFilter.PASSED -> all.filter {
-                    it.decision !in setOf(
-                        DECISION_FILTERED_BY_AI,
-                        DECISION_FILTERED_BY_RULE,
-                        DECISION_MANUAL_MARKED_AD,
-                    )
-                }
+                HistoryFilter.PASSED -> all.filter { it.decision !in FILTERED_DECISIONS }
             }
             if (q.isBlank()) base
             else base.filter {

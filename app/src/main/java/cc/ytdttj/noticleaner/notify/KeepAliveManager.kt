@@ -20,6 +20,7 @@ data class KeepAliveStatus(
     val rootAvailable: Boolean = false,
     val shizukuAvailable: Boolean = false,
     val lspDetected: Boolean? = null, // null=无法检测（需在 LSPosed 管理器中查看）
+    val accessibilityEnabled: Boolean = false, // 1.2.1：无障碍保活层（设置中启用）
 )
 
 class KeepAliveManager(private val context: Context) {
@@ -32,6 +33,7 @@ class KeepAliveManager(private val context: Context) {
             ignoringBattery = pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false,
             rootAvailable = isRootAvailable(),
             shizukuAvailable = shizukuOk,
+            accessibilityEnabled = NotiGuardService.isEnabledInSettings(context),
         )
     }
 
@@ -183,4 +185,39 @@ suspend fun runKeepAliveCommands(
         sb.append(if (out.isBlank()) "(无输出)" else out).appendLine().appendLine()
     }
     return sb.toString().trim()
+}
+
+/**
+ * 监听强制重绑修复（1.2.1，借鉴 ref/signaldock repairAccessibility）：
+ * 以 shell 身份对 enabled_notification_listeners 做"摘除自身 → 写回"，
+ * 强制系统重新触发 NLS 绑定——比 requestRebind 更彻底（覆盖绑定卡死场景）。
+ * shell（Shizuku）与 root 天然持有 WRITE_SECURE_SETTINGS，无需额外授权。
+ */
+object ListenerRepair {
+
+    private val SVC = "${cc.ytdttj.noticleaner.BuildConfig.APPLICATION_ID}" +
+        "/cc.ytdttj.noticleaner.notify.CleanerListenerService"
+
+    /** @return 修复过程日志；抛异常表示失败 */
+    suspend fun repair(executor: ShellExecutor): String {
+        val sb = StringBuilder()
+        val get = executor.exec("settings get secure enabled_notification_listeners")
+            .trim().removeSuffix("null").trim()
+        sb.append("$ settings get secure enabled_notification_listeners").appendLine().appendLine(get).appendLine()
+        val entries = get.split(':').filter { it.isNotBlank() && !it.equals(SVC, ignoreCase = true) }
+        val without = entries.joinToString(":")
+        if (without != get) {
+            val cmd = "settings put secure enabled_notification_listeners \"$without\""
+            sb.appendLine("$ $cmd")
+            executor.exec(cmd)
+            kotlinx.coroutines.delay(350)
+        }
+        val restored = if (without.isBlank()) SVC else "$without:$SVC"
+        val put = "settings put secure enabled_notification_listeners \"$restored\""
+        sb.appendLine("$ $put")
+        executor.exec(put)
+        sb.appendLine("$ cmd notification allow_listener $SVC")
+        sb.appendLine(executor.exec("cmd notification allow_listener $SVC"))
+        return sb.toString().trim()
+    }
 }

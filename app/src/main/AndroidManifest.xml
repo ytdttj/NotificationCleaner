@@ -43,6 +43,14 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- 1.2.1：LSPosed 模块拦截记录回流入口（system_server 调用需要 exported）；
+             仅接受 SYSTEM_UID 与自身（Provider 内校验 callingUid） -->
+        <provider
+            android:name=".provider.ModuleLogProvider"
+            android:authorities="${applicationId}.modulelog"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+
         <!-- LSPosed 模块声明（libxposed API 102 Modern 注册）：
              入口 META-INF/xposed/java_init.list；元数据 META-INF/xposed/module.prop；
              作用域 META-INF/xposed/scope.list（system = system_server）。 -->
@@ -74,6 +82,20 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="notification_filter_keepalive" />
+        </service>
+
+        <!-- 1.2.1：无障碍保活层（可选）：系统绑定的第二条生命线，空实现不读窗口内容 -->
+        <service
+            android:name=".notify.NotiGuardService"
+            android:exported="false"
+            android:label="@string/noti_guard_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/noti_guard_config" />
         </service>
 
         <receiver

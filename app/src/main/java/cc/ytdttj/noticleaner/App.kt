@@ -2,16 +2,38 @@ package cc.ytdttj.noticleaner
 
 import android.app.Application
 import cc.ytdttj.noticleaner.data.ModelRepository
+import cc.ytdttj.noticleaner.data.ModuleConfigSync
 import cc.ytdttj.noticleaner.data.SettingsRepository
 import cc.ytdttj.noticleaner.data.db.AppDatabase
 import cc.ytdttj.noticleaner.notify.CleanerListenerService
 import cc.ytdttj.noticleaner.notify.KeepAliveManager
 import cc.ytdttj.noticleaner.notify.RuleEngine
+import io.github.libxposed.service.XposedService
+import io.github.libxposed.service.XposedServiceHelper
+import kotlinx.coroutines.launch
 
-class App : Application() {
+class App : Application(), XposedServiceHelper.OnServiceListener {
+
     override fun onCreate() {
         super.onCreate()
         ServiceLocator.init(this)
+        // LSPosed 框架服务（模块激活时由框架绑定）：模块激活状态 + delta 远程文件通道
+        runCatching { XposedServiceHelper.registerListener(this) }
+        // 模块拦截记录回流：system_server 在 APP 未运行时缓冲，启动即请求刷出
+        runCatching {
+            sendBroadcast(
+                android.content.Intent(cc.ytdttj.noticleaner.data.ModuleConfigCodec.ACTION_FLUSH_LOGS)
+                    .setPackage(packageName),
+            )
+        }
+    }
+
+    override fun onServiceBind(service: XposedService) {
+        ServiceLocator.onXposedServiceBound(service)
+    }
+
+    override fun onServiceDied(service: XposedService) {
+        ServiceLocator.onXposedServiceDied()
     }
 }
 
@@ -31,6 +53,8 @@ object ServiceLocator {
         private set
     lateinit var keepAlive: KeepAliveManager
         private set
+    lateinit var moduleSync: ModuleConfigSync
+        private set
 
     lateinit var appContext: android.content.Context
         private set
@@ -44,6 +68,18 @@ object ServiceLocator {
         modelRepo = ModelRepository(app)
         ruleEngine = RuleEngine(db.ruleDao(), db.whitelistDao())
         keepAlive = KeepAliveManager(app)
+        moduleSync = ModuleConfigSync(app, db.ruleDao(), db.whitelistDao())
+        moduleSync.start(appScope)
         CleanerListenerService.initScope(app)
+    }
+
+    /** LSPosed 框架服务绑定（模块激活）：注入同步器并补推 delta */
+    fun onXposedServiceBound(service: XposedService) {
+        moduleSync.xposedService = service
+        appScope.launch { moduleSync.onServiceBound() }
+    }
+
+    fun onXposedServiceDied() {
+        moduleSync.xposedService = null
     }
 }
