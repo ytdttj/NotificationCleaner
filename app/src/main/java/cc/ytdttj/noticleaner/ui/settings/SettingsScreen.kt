@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -174,18 +175,43 @@ class SettingsViewModel(
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _simulateBusy.value = true
             val island = cc.ytdttj.noticleaner.notify.island.IslandNotifier
+            val trace = cc.ytdttj.noticleaner.notify.island.IslandTrace
             val cmd = buildString {
                 append("cmd notification post")
                 if (title.isNotBlank()) append(" -t ").append(shellQuote(title))
                 append(" ").append(shellQuote(island.SIM_TAG_PREFIX + pkg))
                 if (content.isNotBlank()) append(" ").append(shellQuote(content))
             }
-            val out = runCatching { ShizukuExecutor.exec(cmd) }
-                .getOrElse { "执行失败: $it" }
-            _simulateBusy.value = false
+            trace.log("模拟发送开始: 来源=${island.PACKAGE_LABELS[pkg] ?: pkg} cmd=$cmd")
             val label = island.PACKAGE_LABELS[pkg] ?: pkg
-            _toast.value = if (out.isBlank()) "模拟通知已发送（来源模拟为 $label）" else "发送失败: $out"
+
+            // 通道1：Shizuku（cmd post 成功也输出 "posting for user 0: ..."，不能以空判成败）
+            val shizukuOut = runCatching { ShizukuExecutor.exec(cmd) }.getOrElse { "通道异常: $it" }
+            var ok = isCmdOutputOk(shizukuOut)
+            var via = "Shizuku"
+            var out = shizukuOut
+            trace.log("Shizuku 通道: ok=$ok 输出=${shizukuOut.take(200)}")
+
+            // 通道2：Root 回退
+            if (!ok) {
+                val rootOut = runCatching { RootExecutor.exec(cmd) }.getOrElse { "通道异常: $it" }
+                ok = isCmdOutputOk(rootOut)
+                via = "Root"
+                out = rootOut
+                trace.log("Root 回退通道: ok=$ok 输出=${rootOut.take(200)}")
+            }
+
+            _simulateBusy.value = false
+            _toast.value = if (ok) "模拟通知已发送（来源模拟为 $label，经 $via）" else "发送失败（$via）: ${out.take(120)}"
         }
+    }
+
+    /** cmd notification post 成功时输出 "posting for user 0: ..."（非空）；失败含 Exception/Error */
+    private fun isCmdOutputOk(out: String): Boolean {
+        val o = out.trim()
+        if (o.isEmpty()) return true
+        if (o.startsWith("通道异常")) return false
+        return !o.contains("Exception", ignoreCase = true) && !o.contains("Error", ignoreCase = true)
     }
 
     private fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
@@ -430,6 +456,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         val islandEnabled by vm.islandEnabled.collectAsState()
         val islandPackages by vm.islandPackages.collectAsState()
         var islandStatus by remember { mutableStateOf("探测系统支持中…") }
+        var showDiag by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) { vm.probeIsland { islandStatus = it } }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
@@ -462,8 +489,39 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 Spacer(Modifier.height(8.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(8.dp))
-                OutlinedButton(enabled = islandEnabled, onClick = { vm.sendTestIsland() }) {
-                    Text("发送测试岛")
+                Row {
+                    OutlinedButton(enabled = islandEnabled, onClick = { vm.sendTestIsland() }) {
+                        Text("发送测试岛")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { showDiag = true }) { Text("诊断日志") }
+                }
+                if (showDiag) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { showDiag = false },
+                        title = { Text("岛链路诊断") },
+                        text = {
+                            Column(
+                                Modifier
+                                    .heightIn(max = 420.dp)
+                                    .verticalScroll(rememberScrollState()),
+                            ) {
+                                Text(
+                                    cc.ytdttj.noticleaner.notify.island.IslandTrace.dump(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                cc.ytdttj.noticleaner.notify.island.IslandTrace.clear()
+                                showDiag = false
+                            }) { Text("清空") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDiag = false }) { Text("关闭") }
+                        },
+                    )
                 }
             }
         }

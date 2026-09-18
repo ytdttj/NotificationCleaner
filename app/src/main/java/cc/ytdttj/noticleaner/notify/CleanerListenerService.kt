@@ -330,10 +330,14 @@ class CleanerListenerService : NotificationListenerService() {
             }
         } else {
             // island 分支：放行通知的支付信息上岛（islandplan.md §三；内部全静默降级）
-            runCatching {
-                cc.ytdttj.noticleaner.notify.island.IslandNotifier.maybePost(
-                    applicationContext, sbn, title, content,
+            val island = cc.ytdttj.noticleaner.notify.island.IslandNotifier
+            if (island.isIslandRelevant(sbn)) {
+                cc.ytdttj.noticleaner.notify.island.IslandTrace.log(
+                    "管线放行 decision=$decision p=$probability pkg=${island.effectivePackage(sbn)}",
                 )
+            }
+            runCatching {
+                island.maybePost(applicationContext, sbn, title, content)
             }
         }
 

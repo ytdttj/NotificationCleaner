@@ -60,16 +60,22 @@ object IslandBypassExecutor {
 
     private fun runBypass(context: Context, notificationId: Int, notification: Notification, bypassMs: Long) {
         val uid = resolveXmsfUid(context)
+        if (uid == -1) IslandTrace.log("✗ 盲窗：获取 xmsf UID 失败（com.xiaomi.xmsf 不存在？）")
         var blocked = false
         try {
             if (uid != -1) blocked = blockXmsf(uid)
-            if (!blocked) Log.w(TAG, "xmsf network block unavailable; posting without bypass")
+            if (!blocked) {
+                IslandTrace.log("⚠ 盲窗未开启（Shizuku/Binder 失败），无保护直发岛通知")
+                Log.w(TAG, "xmsf network block unavailable; posting without bypass")
+            }
             context.getSystemService(NotificationManager::class.java)
                 .notify(notificationId, notification)
+            IslandTrace.log("岛通知已提交系统 (id=$notificationId)")
             if (blocked) Thread.sleep(bypassMs.coerceIn(50, 500))
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         } catch (t: Throwable) {
+            IslandTrace.log("✗ 岛通知提交失败: $t")
             Log.e(TAG, "island post failed", t)
         } finally {
             if (blocked && uid != -1) unblockXmsf(uid)
@@ -91,13 +97,20 @@ object IslandBypassExecutor {
     }.getOrNull()
 
     private fun blockXmsf(uid: Int): Boolean {
-        val cm = connectivity() ?: return false
+        val cm = connectivity() ?: run {
+            IslandTrace.log("✗ 盲窗：ConnectivityService Binder 获取失败（Shizuku 不可用？）")
+            return false
+        }
         repeat(2) { attempt ->
-            val ok = runCatching {
+            val result = runCatching {
                 cm.setFirewallChainEnabled(CHAIN, true)
                 cm.setUidFirewallRule(CHAIN, uid, RULE_DENY)
-            }.isSuccess
-            if (ok) return true
+            }
+            if (result.isSuccess) {
+                IslandTrace.log("✓ 盲窗开启：xmsf(uid=$uid) 网络已断 (chain=$CHAIN)")
+                return true
+            }
+            IslandTrace.log("✗ 盲窗断网失败(${attempt + 1}/2): ${result.exceptionOrNull()?.javaClass?.simpleName}: ${result.exceptionOrNull()?.message}")
             if (attempt == 0) runCatching { Thread.sleep(50) }
         }
         return false
@@ -110,9 +123,13 @@ object IslandBypassExecutor {
             val ok = runCatching {
                 cm.setUidFirewallRule(CHAIN, uid, RULE_DEFAULT)
             }.isSuccess
-            if (ok) return
+            if (ok) {
+                IslandTrace.log("✓ 盲窗恢复：xmsf 网络已还原")
+                return
+            }
             if (attempt == 0) runCatching { Thread.sleep(50) }
         }
+        IslandTrace.log("✗ 盲窗恢复失败（重试 2 次），xmsf 可能仍断网——请检查网络或重启")
         Log.e(TAG, "xmsf network restore failed after retries")
     }
 }

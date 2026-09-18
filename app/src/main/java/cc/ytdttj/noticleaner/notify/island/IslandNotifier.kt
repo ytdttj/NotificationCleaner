@@ -41,6 +41,10 @@ object IslandNotifier {
         return sbn.packageName
     }
 
+    /** 该通知是否与岛链路相关（白名单包或模拟通知），用于诊断日志降噪 */
+    fun isIslandRelevant(sbn: StatusBarNotification): Boolean =
+        effectivePackage(sbn) in packages || sbn.packageName == SHELL_PACKAGE
+
     /** 默认白名单（islandplan.md §1.1；包名待真机核对，设置页可逐个开关） */
     val DEFAULT_PACKAGES: Set<String> = linkedSetOf(
         "com.eg.android.AlipayGphone", // 支付宝
@@ -94,17 +98,33 @@ object IslandNotifier {
      * 发送排队到盲窗执行器（串行）。
      */
     fun maybePost(context: Context, sbn: StatusBarNotification, title: String, content: String) {
-        if (!enabled) return
         // 模拟来源解析：Shell 通知的 island:<pkg> tag → 按模拟包名走白名单/图标/App名
         val pkg = effectivePackage(sbn)
-        if (pkg !in packages) return
+        val inWhitelist = pkg in packages
+        // 诊断：只对白名单相关包名记录，避免噪音
+        if (inWhitelist || sbn.packageName == SHELL_PACKAGE) {
+            IslandTrace.log("收到通知 pkg=$pkg raw=${sbn.packageName} title=${title.take(20)}")
+        }
+        if (!enabled) {
+            if (inWhitelist) IslandTrace.log("✗ 总开关未开启，跳过")
+            return
+        }
+        if (!inWhitelist) return
         val payment = runCatching { PaymentExtractor.extract(title, content) }
-            .getOrElse { Log.w(TAG, "extract failed", it); null } ?: return
+            .getOrElse { Log.w(TAG, "extract failed", it); null }
+        if (payment == null) {
+            IslandTrace.log("✗ 金额解析失败：'$title' / '${content.take(30)}'")
+            return
+        }
+        IslandTrace.log("金额解析: ${payment.capsuleText.trim()} 方向=${payment.direction} 折算=${payment.convertedCnyText ?: "无"}")
 
         val sig = "$pkg|${title.hashCode()}|${content.hashCode()}"
         val now = System.currentTimeMillis()
         val last = recentPosted[sig]
-        if (last != null && now - last < DEDUP_WINDOW_MS) return
+        if (last != null && now - last < DEDUP_WINDOW_MS) {
+            IslandTrace.log("✗ 60s 内重复推送，跳过")
+            return
+        }
         // 清理过期条目，防长期驻留膨胀
         recentPosted.entries.removeIf { now - it.value > DEDUP_WINDOW_MS }
         recentPosted[sig] = now
@@ -115,6 +135,7 @@ object IslandNotifier {
                 context.packageManager.getApplicationIcon(pkg),
             )
         }.getOrNull()
+        if (icon == null) IslandTrace.log("⚠ 来源图标获取失败（用系统占位）")
         val contentIntent = sbn.notification?.contentIntent
 
         val notification = runCatching {
@@ -128,13 +149,16 @@ object IslandNotifier {
                 contentIntent = contentIntent,
                 islandTimeoutSec = ISLAND_TIMEOUT_SEC,
             )
-        }.getOrElse { Log.w(TAG, "build island notification failed", it); return }
+        }.getOrElse {
+            IslandTrace.log("✗ 岛通知构建失败: $it")
+            Log.w(TAG, "build island notification failed", it); return
+        }
 
         val id = nextId.updateAndGet { cur ->
             if (cur >= NOTIF_ID_LAST) NOTIF_ID_FIRST else cur + 1
         }
         IslandBypassExecutor.post(context, id, notification, bypassMs)
-        Log.i(TAG, "island queued: $appName ${payment.capsuleText.trim()} (id=$id)")
+        IslandTrace.log("岛通知已入队 (id=$id, 盲窗=${bypassMs}ms)，等待盲窗执行器结果…")
     }
 
     /** 设置页"发送测试岛"：走完整盲窗链路，结果回调主线程 */
