@@ -27,6 +27,17 @@ class LspEntry : XposedModule() {
         log(Log.INFO, TAG, "module loaded in ${param.processName} (isSystemServer=${param.isSystemServer()})")
     }
 
+    /**
+     * island 分支：SystemUI 进程加载时挂焦点通知白名单解锁（islandv2plan P3-2）。
+     * 仅当 LSPosed 作用域含 com.android.systemui 时回调。
+     */
+    override fun onPackageLoaded(param: XposedModuleInterface.PackageLoadedParam) {
+        if (param.packageName == "com.android.systemui") {
+            runCatching { IslandUnlockFocusHook(this).onPackageLoaded(param) }
+                .onFailure { log(Log.WARN, TAG, "island focus hook init failed: $it") }
+        }
+    }
+
     override fun onSystemServerStarting(param: SystemServerStartingParam) {
         hookActiveServices(param.classLoader)
         hookNotificationManagerService(param.classLoader)
