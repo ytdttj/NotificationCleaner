@@ -49,6 +49,7 @@ object IslandParamsBuilder {
         contentIntent: PendingIntent?,
         islandTimeoutSec: Int = 120,
         showNotification: Boolean = false,
+        autoExpandSec: Int = 5,
     ): Notification {
         ensureChannel(context)
 
@@ -117,7 +118,7 @@ object IslandParamsBuilder {
             put("islandPriority", 2)
             put("islandTimeout", islandTimeoutSec)
             put("dismissIsland", false)
-            put("expandedTime", 0) // 展开态不自动保持，用户手动展开
+            put("expandedTime", autoExpandSec) // 展开态自动保持 N 秒后收起为胶囊（0=立即收起）
             put("maxSize", false)
             put("needCloseAnimation", true)
             put("bigIslandArea", bigIslandArea)
@@ -128,7 +129,7 @@ object IslandParamsBuilder {
             put("protocol", 1)
             put("business", "payment")
             put("enableFloat", false) // 更新时不自动展开
-            put("islandFirstFloat", false)
+            put("islandFirstFloat", true) // 首次出现直接弹出展开态
             put("updatable", false) // 一次性提醒类
             put("isShowNotification", showNotification) // 测试路径 true：岛被认证拒绝时通知栏至少留痕
             put("ticker", "$appName ${payment.capsuleText.trim()}")
