@@ -55,6 +55,14 @@ class MainActivity : ComponentActivity() {
     private var alertVisible by mutableStateOf(false)
     private var lostListener by mutableStateOf(false)
     private var lostBattery by mutableStateOf(false)
+    private var lostNotifications by mutableStateOf(false)
+
+    // ---- 1.2.2：通知发送权限请求（Android 13+ 常驻保活/更新提醒通知必需） ----
+    private val notifPermLauncher =
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) {
+            // 授权/拒绝后刷新状态（拒绝时由 PermissionLostDialog 引导去系统设置）
+            entryPermissionCheck(showAlert = alertVisible)
+        }
 
     // ---- 进入应用自动检查更新（1.1.8）：onCreate/onNewIntent 递增触发 ----
     private var entryCount by mutableStateOf(0)
@@ -91,8 +99,15 @@ class MainActivity : ComponentActivity() {
         val s = checkPermissions(this)
         lostListener = !s.listenerEnabled
         lostBattery = !s.batteryWhitelisted
-        if (showAlert && (lostListener || lostBattery)) alertVisible = true
-        if (!lostListener && !lostBattery) alertVisible = false
+        lostNotifications = !s.notificationsGranted
+        if (showAlert && (lostListener || lostBattery || lostNotifications)) alertVisible = true
+        if (!lostListener && !lostBattery && !lostNotifications) alertVisible = false
+
+        // 1.2.2：无通知发送权限 → 每次进入发起系统授权请求
+        //（永久拒绝时系统静默返回，由 PermissionLostDialog 引导去应用通知设置）
+        if (!s.notificationsGranted && android.os.Build.VERSION.SDK_INT >= 33) {
+            notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
         lifecycleScope.launch {
             // 1.1.13：每次进入按当前设置重应用任务隐藏（任务标志不跨任务实例持久）
             applyExcludeFromRecents(ServiceLocator.settings.excludeFromRecents.first())
@@ -139,10 +154,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 cc.ytdttj.noticleaner.ui.update.UpdatePromptDialog(vm = updateVm, onDismiss = {})
-                if (alertVisible && (lostListener || lostBattery)) {
+                if (alertVisible && (lostListener || lostBattery || lostNotifications)) {
                     PermissionLostDialog(
                         lostListener = lostListener,
                         lostBattery = lostBattery,
+                        lostNotifications = lostNotifications,
                         onDismiss = { alertVisible = false },
                     )
                 }

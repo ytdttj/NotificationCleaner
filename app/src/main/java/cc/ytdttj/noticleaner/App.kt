@@ -26,6 +26,8 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
                     .setPackage(packageName),
             )
         }
+        // 1.2.2：后台定期更新检查（6 小时，有网络约束），有新版本发通知提醒
+        runCatching { cc.ytdttj.noticleaner.update.UpdateWorker.schedule(this) }
     }
 
     override fun onServiceBind(service: XposedService) {

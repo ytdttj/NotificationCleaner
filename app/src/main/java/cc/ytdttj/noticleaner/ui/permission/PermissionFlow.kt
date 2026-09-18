@@ -44,13 +44,22 @@ import cc.ytdttj.noticleaner.notify.CleanerListenerService
 data class PermissionStatus(
     val listenerEnabled: Boolean, // 通知读取权限
     val batteryWhitelisted: Boolean, // 省电策略（忽略电池优化）
+    val notificationsGranted: Boolean = true, // 1.2.2：通知发送权限（Android 13+ 运行时）
 )
 
 fun checkPermissions(context: Context): PermissionStatus {
     val pm = context.getSystemService(PowerManager::class.java)
+    val notificationsGranted = if (Build.VERSION.SDK_INT >= 33) {
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    } else {
+        true
+    }
     return PermissionStatus(
         listenerEnabled = CleanerListenerService.isListenerEnabled(context),
         batteryWhitelisted = pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false,
+        notificationsGranted = notificationsGranted,
     )
 }
 
@@ -122,6 +131,18 @@ private fun jumpToBatterySettings(context: Context) {
     }
 }
 
+/** 1.2.2：本应用通知设置页（通知发送权限被永久拒绝时的兜底入口） */
+fun jumpToAppNotificationSettings(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+    }
+}
+
 /** 返回本界面（ON_RESUME）时刷新一次 */
 @Composable
 private fun ResumeEffect(onResume: () -> Unit) {
@@ -180,6 +201,15 @@ fun OnboardingScreen(onFinish: () -> Unit) {
             granted = status.batteryWhitelisted,
             buttonText = "去设置",
             onJump = { jumpToBatterySettings(context) },
+        )
+        Spacer(Modifier.height(12.dp))
+        PermissionCard(
+            title = "通知发送权限",
+            desc = "Android 13+ 需要授权才能显示常驻保活通知与更新提醒（点击授权）。",
+            statusText = if (status.notificationsGranted) "已授权" else "未授权",
+            granted = status.notificationsGranted,
+            buttonText = "去授权",
+            onJump = { jumpToAppNotificationSettings(context) },
         )
         Spacer(Modifier.height(12.dp))
         PermissionCard(
@@ -247,6 +277,7 @@ private fun PermissionCard(
 fun PermissionLostDialog(
     lostListener: Boolean,
     lostBattery: Boolean,
+    lostNotifications: Boolean = false,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -266,6 +297,11 @@ fun PermissionLostDialog(
                 }
                 if (lostBattery) {
                     LostPermRow("省电策略（需设为无限制）", onJump = { jumpToBatterySettings(context) })
+                }
+                if (lostNotifications) {
+                    LostPermRow("通知发送权限（保活通知无法显示）", onJump = {
+                        jumpToAppNotificationSettings(context)
+                    })
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
