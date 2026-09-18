@@ -61,9 +61,14 @@ fun AppPickerScreen(
     val allApps = remember {
         val pm = context.packageManager
         runCatching {
+            // 1.2.3：不再按 launcher 过滤——系统应用（服务类无界面包）也可选；
+            // label 解析逐项容错（个别包 RRO 资源加载失败不影响整个列表）
             pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                .filter { pm.getLaunchIntentForPackage(it.packageName) != null }
-                .map { AppInfo(it.packageName, pm.getApplicationLabel(it)?.toString() ?: it.packageName) }
+                .map {
+                    val label = runCatching { pm.getApplicationLabel(it)?.toString() }
+                        .getOrNull() ?: it.packageName
+                    AppInfo(it.packageName, label)
+                }
                 .sortedBy { it.label.lowercase() }
         }.getOrDefault(emptyList())
     }

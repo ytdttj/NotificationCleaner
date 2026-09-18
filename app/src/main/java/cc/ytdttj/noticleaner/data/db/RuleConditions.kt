@@ -56,6 +56,9 @@ data class RuleConditionSet(
     fun toJson(): String = Json.encodeToString(this)
 
     companion object {
+        const val AND_JOIN = "AND"
+        const val OR_JOIN = "OR"
+
         private val json = Json { ignoreUnknownKeys = true }
         fun fromJson(raw: String): RuleConditionSet? = runCatching {
             json.decodeFromString<RuleConditionSet>(raw)
@@ -75,7 +78,13 @@ object ConditionEvaluator {
     fun eval(c: RuleCondition, title: String, content: String): Boolean {
         val text = if (c.field == MATCH_TITLE) title else content
         val values = c.values.map { it.trim() }.filter { it.isNotEmpty() }
-        return when (c.mode) {
+        return evalValues(c.field, c.mode, values, title, content)
+    }
+
+    /** 与 [eval] 相同语义，但 values/正则由调用方预编译（ImprovePlan P1-1：热路径零解析零编译） */
+    fun evalValues(field: String, mode: String, values: List<String>, title: String, content: String): Boolean {
+        val text = if (field == MATCH_TITLE) title else content
+        return when (mode) {
             MatchMode.ALL_TEXT -> true // 所有内容：该字段存在即命中（空文本不命中）
                 .let { if (text.isEmpty()) false else it }
             MatchMode.ANY_TEXT -> values.any { text.contains(it, ignoreCase = true) }
@@ -95,4 +104,52 @@ object ConditionEvaluator {
             else -> false
         }
     }
+}
+
+/**
+ * 预编译条件（ImprovePlan P1-1）：values 预 trim 过滤、REGEX_ANY 预编译正则。
+ * 语义与 [ConditionEvaluator.eval] 完全一致（非法正则按原语义跳过该项）。
+ */
+class CompiledCondition(
+    private val field: String, // MATCH_TITLE / MATCH_CONTENT
+    private val mode: String,
+    private val values: List<String>, // 已 trim、已滤空
+    private val regexes: List<Regex>?, // 仅 REGEX_ANY 非空
+) {
+    fun eval(title: String, content: String): Boolean {
+        val text = if (field == MATCH_TITLE) title else content
+        return when (mode) {
+            MatchMode.ALL_TEXT -> text.isNotEmpty()
+            MatchMode.ANY_TEXT -> values.any { text.contains(it, ignoreCase = true) }
+            MatchMode.ALL_TEXTS -> values.isNotEmpty() && values.all { text.contains(it, ignoreCase = true) }
+            MatchMode.MISSING_ANY -> values.isNotEmpty() && !values.all { text.contains(it, ignoreCase = true) }
+            MatchMode.EXCLUDE_ALL -> values.isNotEmpty() && values.none { text.contains(it, ignoreCase = true) }
+            MatchMode.INCLUDE_EXCLUDE -> {
+                if (values.isEmpty()) false
+                else text.contains(values.first(), ignoreCase = true) &&
+                    values.drop(1).none { text.contains(it, ignoreCase = true) }
+            }
+            MatchMode.EQUALS_ANY -> values.any { text.equals(it, ignoreCase = true) }
+            MatchMode.REGEX_ANY -> regexes?.any { it.containsMatchIn(text) } ?: false
+            else -> false
+        }
+    }
+}
+
+/** 规则预编译入口（RuleEngine 缓存构建用，低频路径） */
+object RuleCompiler {
+
+    /** 单条件 → 预编译条件 */
+    fun compile(c: RuleCondition): CompiledCondition {
+        val values = c.values.map { it.trim() }.filter { it.isNotEmpty() }
+        val regexes = if (c.mode == MatchMode.REGEX_ANY) {
+            values.mapNotNull { v -> runCatching { Regex(v) }.getOrNull() }
+        } else {
+            null
+        }
+        return CompiledCondition(c.field, c.mode, values, regexes)
+    }
+
+    /** 条件集合 → 预编译条件列表（保留 AND/OR 关系由调用方读取 set.join） */
+    fun compile(set: RuleConditionSet): List<CompiledCondition> = set.conditions.map { compile(it) }
 }

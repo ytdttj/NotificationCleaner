@@ -14,7 +14,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -47,7 +46,6 @@ sealed class UpdateState {
 }
 
 class UpdateViewModel : ViewModel() {
-    private val json = Json { ignoreUnknownKeys = true }
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state
 
@@ -61,7 +59,7 @@ class UpdateViewModel : ViewModel() {
         _state.value = UpdateState.Idle
     }
 
-    /** 检查更新（Gitee 优先，带时间戳穿透 CDN 缓存）。
+    /** 检查更新（Gitee 优先；检查逻辑在 [UpdateChecker]，与后台 Worker 共用）。
      *  island 分支：包名非正式版时短路——latest.json 通道只指正式版（island 版与正式版并存，装正式版 APK 不会升级而是多装一个） */
     fun checkUpdate() {
         if (BuildConfig.APPLICATION_ID != "cc.ytdttj.noticleaner") {
@@ -72,16 +70,13 @@ class UpdateViewModel : ViewModel() {
         downloadJob?.cancel()
         _state.value = UpdateState.Checking
         viewModelScope.launch {
-            val bust = "t=${System.currentTimeMillis()}"
-            val result = withContext(Dispatchers.IO) {
-                fetchJson("${BuildConfig.UPDATE_LATEST_GITEE}?$bust")
-                    ?.also { lastCheckSource = "gitee" }
-                    ?: fetchJson("${BuildConfig.UPDATE_LATEST_GITHUB}?$bust")
-                        ?.also { lastCheckSource = "github" }
-            }
+            val result = UpdateChecker.checkLatest()
             _state.value = when {
                 result == null -> UpdateState.Error("检查失败：无法访问 GitHub 与 Gitee")
-                result.versionCode > BuildConfig.VERSION_CODE -> UpdateState.Available(result)
+                result.release.versionCode > BuildConfig.VERSION_CODE -> {
+                    lastCheckSource = result.source
+                    UpdateState.Available(result.release)
+                }
                 else -> UpdateState.UpToDate
             }
         }
@@ -143,44 +138,6 @@ class UpdateViewModel : ViewModel() {
     }
 
     // ---- 内部实现 ----
-
-    /**
-     * 拉取 latest.json：
-     * - 显式 UA（部分 CDN 拒绝 Dalvik 默认 UA）
-     * - 手动跟随 3xx（跨域重定向不依赖系统实现）
-     * - 失败原因写入 logcat（tag UpdateVM）
-     */
-    private fun fetchJson(urlStr: String): LatestRelease? = runCatching {
-        var url = urlStr
-        repeat(5) {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 10_000
-            conn.instanceFollowRedirects = false
-            conn.setRequestProperty("User-Agent", "NotiCleaner/${BuildConfig.VERSION_NAME}")
-            try {
-                when (conn.responseCode) {
-                    in 200..299 -> {
-                        // 剥离可能的 UTF-8 BOM，kotlinx.serialization 不容忍 BOM
-                        val body = conn.inputStream.bufferedReader().use { it.readText() }
-                            .trimStart('\uFEFF')
-                        return json.decodeFromString<LatestRelease>(body)
-                    }
-                    in 300..399 -> {
-                        val loc = conn.getHeaderField("Location") ?: return null
-                        url = loc
-                    }
-                    else -> {
-                        android.util.Log.w("UpdateVM", "HTTP ${conn.responseCode} for $url")
-                        return null
-                    }
-                }
-            } finally {
-                conn.disconnect()
-            }
-        }
-        null
-    }.onFailure { android.util.Log.w("UpdateVM", "fetch failed for $urlStr", it) }.getOrNull()
 
     /**
      * 应用内直连下载（1.1.9，替代系统 DownloadManager）：

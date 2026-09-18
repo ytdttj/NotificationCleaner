@@ -1,6 +1,6 @@
 {
-    "sha256":  "184033b53480ec0d4abf9ffa70afa22a56b1f68c12de05b14b00af6e445fa915",
-    "versionCode":  20,
-    "versionName":  "1.1.12",
-    "notes":  "修复 LSPosed 模块注册：切换到 libxposed API 102 Modern 注册方式（META-INF/xposed/module.prop + java_init.list），此前旧式声明（xposedminversion=100）已被 LSPosed 移除支持导致模块不加载；补 ProGuard keep 入口类"
+  "versionCode": 26,
+  "versionName": "1.2.3",
+  "notes": "修复与改进：\n· 手动规则的「选择 APP」现在可以选中系统应用（含无界面的服务类应用），搜索过滤长列表\n· 个别应用名称/图标加载失败时（设备主题资源缓存问题，重启手机可自愈）不再反复重试，列表更流畅、日志更干净\n· 通知详情页对解析失败的应用不再重复显示包名",
+  "sha256": "5b06792ba340fecd95771c87893e838e3d9e7ec9a9d382de4e7e9f5c5f138103"
 }

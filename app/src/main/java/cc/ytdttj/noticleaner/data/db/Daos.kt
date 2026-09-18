@@ -20,6 +20,10 @@ interface NotificationDao {
     @Query("SELECT * FROM notifications WHERE decision = :decision ORDER BY postTime DESC LIMIT 500")
     fun listByDecision(decision: String): Flow<List<NotificationEntity>>
 
+    /** 按决策集合查询（1.2.1：模块端拦截的 *_MODULE 决策与 NLS 决策合并展示） */
+    @Query("SELECT * FROM notifications WHERE decision IN (:decisions) ORDER BY postTime DESC LIMIT 500")
+    fun listByDecisions(decisions: List<String>): Flow<List<NotificationEntity>>
+
     @Query("SELECT * FROM notifications WHERE learned = 1 ORDER BY postTime DESC LIMIT 500")
     fun listLearned(): Flow<List<NotificationEntity>>
 
@@ -46,7 +50,8 @@ interface NotificationDao {
     suspend fun findRecentDuplicate(pkg: String, title: String, content: String, since: Long): NotificationEntity?
 
     @Query(
-        "SELECT COUNT(*) FROM notifications WHERE decision IN ('FILTERED_BY_AI','FILTERED_BY_RULE')"
+        "SELECT COUNT(*) FROM notifications WHERE decision IN " +
+            "('FILTERED_BY_AI','FILTERED_BY_AI_MODULE','FILTERED_BY_RULE','FILTERED_BY_RULE_MODULE')"
     )
     fun filteredCount(): Flow<Int>
 

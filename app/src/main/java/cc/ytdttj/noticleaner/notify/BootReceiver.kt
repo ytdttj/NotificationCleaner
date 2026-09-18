@@ -1,4 +1,4 @@
-﻿package cc.ytdttj.noticleaner.notify
+package cc.ytdttj.noticleaner.notify
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -16,6 +16,8 @@ class BootReceiver : BroadcastReceiver() {
             -> {
                 KeepAliveService.start(context)
                 CleanerListenerService.requestRebind(context)
+                // 1.1.14：开机/升级即续约闹钟看门狗，保证自愈链条在服务被杀后仍延续
+                WatchdogReceiver.schedule(context)
             }
         }
     }

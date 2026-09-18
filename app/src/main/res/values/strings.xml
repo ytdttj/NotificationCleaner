@@ -3,4 +3,10 @@
     <string name="app_description">本地 AI 过滤广告通知；LSPosed 模块可阻止系统停止通知监听服务（后台保活）</string>
     <string name="service_label">通知净化服务</string>
     <string name="keepalive_channel">保活服务</string>
+    <string name="noti_guard_label">保活守护</string>
+    <string name="noti_guard_desc">后台保活辅助：保持本应用与系统的绑定（不读取屏幕内容）</string>
+    <string name="update_channel">更新提醒</string>
+    <string name="update_channel_desc">发现新版本时的通知提醒</string>
+    <string name="update_notif_title">发现新版本 v%s</string>
+    <string name="update_notif_text">点击进入应用查看更新内容</string>
 </resources>

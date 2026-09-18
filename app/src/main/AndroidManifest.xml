@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 1.2.3：APP 选择器需列出全部应用（含系统应用）——Android 11+ 包可见性过滤需要 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <application
         android:name=".App"
@@ -42,6 +44,14 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- 1.2.1：LSPosed 模块拦截记录回流入口（system_server 调用需要 exported）；
+             仅接受 SYSTEM_UID 与自身（Provider 内校验 callingUid） -->
+        <provider
+            android:name=".provider.ModuleLogProvider"
+            android:authorities="${applicationId}.modulelog"
+            android:exported="true"
+            android:grantUriPermissions="false" />
 
         <!-- LSPosed 模块声明（libxposed API 102 Modern 注册）：
              入口 META-INF/xposed/java_init.list；元数据 META-INF/xposed/module.prop；
@@ -76,6 +86,20 @@
                 android:value="notification_filter_keepalive" />
         </service>
 
+        <!-- 1.2.1：无障碍保活层（可选）：系统绑定的第二条生命线，空实现不读窗口内容 -->
+        <service
+            android:name=".notify.NotiGuardService"
+            android:exported="false"
+            android:label="@string/noti_guard_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/noti_guard_config" />
+        </service>
+
         <receiver
             android:name=".notify.BootReceiver"
             android:enabled="true"
@@ -86,5 +110,11 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- 1.1.13：Doze 免疫的闹钟看门狗（保活服务被杀后仍维持监听重绑自愈链） -->
+        <receiver
+            android:name=".notify.WatchdogReceiver"
+            android:enabled="true"
+            android:exported="false" />
     </application>
 </manifest>

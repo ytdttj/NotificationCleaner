@@ -73,12 +73,7 @@ class CleanerListenerService : NotificationListenerService() {
             }
         }
 
-        /** 硬放行词表：误杀代价极高，内容命中直接 PASSED（Plan.md §5.6 护栏） */
-        private val HARD_ALLOW_WORDS =
-            listOf("验证码", "动态码", "校验码", "OTP", "verification code", "one-time")
-
-        /** 强广告标记（1.1.11）：通知内容含 ">" / ">>"（含全角）极大概率为广告，概率抬到 0.95 */
-        private const val SPAM_MARK_BOOST = 0.95
+        /** 硬放行词表与强广告抬升常量迁移至 [FilterGuards]（1.2.1：NLS 与模块端共用） */
 
         private val EXPIRE_MS = TimeUnit.DAYS.toMillis(7)
         private val DEDUP_WINDOW_MS = TimeUnit.SECONDS.toMillis(60)
@@ -100,9 +95,20 @@ class CleanerListenerService : NotificationListenerService() {
         @Volatile
         private var appScope: CoroutineScope? = null
 
+        /**
+         * 1.2.0（ImprovePlan P1-5）：通知处理独立限流调度器——风暴/补扫时不再打满
+         * Dispatchers.Default（缓解对其它监听 APP 的 CPU 挤压）
+         * 1.2.1：拆分为实时 / 补扫双通道——backfill 只占 1 通道慢消化，
+         * 重连补扫不再排队阻塞实时通知（重连后延迟的直接修复）
+         */
+        private var realtimeDispatcher: kotlinx.coroutines.CoroutineDispatcher? = null
+        private var backfillDispatcher: kotlinx.coroutines.CoroutineDispatcher? = null
+
         fun initScope(context: Context) {
             if (appScope == null) {
                 appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                realtimeDispatcher = Dispatchers.Default.limitedParallelism(2)
+                backfillDispatcher = Dispatchers.Default.limitedParallelism(1)
                 // 设置项持续同步到内存，决策路径零 IO
                 appScope!!.launch {
                     ServiceLocator.settings.threshold.collect { cachedThreshold = it }
@@ -155,25 +161,33 @@ class CleanerListenerService : NotificationListenerService() {
         super.onCreate()
         activeInstance = this
         initScope(this)
+        android.util.Log.i("NCWatch", "listener onCreate uptime=${android.os.SystemClock.elapsedRealtime()}")
         val scope = appScope ?: return
         scope.launch {
             ServiceLocator.db.notificationDao().purgeExpired(System.currentTimeMillis())
         }
+        // 1.1.14：进程被拉起（NMS 重绑/开机/升级）时也续约闹钟看门狗，保证链条不断
+        WatchdogReceiver.schedule(this)
         KeepAliveService.start(this)
     }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
         listenerConnected = true
+        android.util.Log.i("NCWatch", "listener CONNECTED")
         // 补撤：学习/拦截时监听未连接而残留的通知（1.1.8）
         if (pendingCancels.isNotEmpty()) {
             val keys = pendingCancels.toList()
             pendingCancels.removeAll(keys)
             keys.forEach { runCatching { cancelNotification(it) } }
+            android.util.Log.i("NCWatch", "pendingCancels flushed: ${keys.size}")
         }
         // 追溯处理：监听断线期间弹出的通知不会触发回调，重连后扫一遍通知栏补处理（1.1.8）
+        // 1.2.1：补扫走独立慢速通道（backfillDispatcher），不与实时通知抢并发
         runCatching {
-            activeNotifications?.forEach { sbn -> onNotificationPosted(sbn) }
+            val active = activeNotifications
+            android.util.Log.i("NCWatch", "backfill scan: ${active?.size ?: -1} active notifications")
+            active?.forEach { sbn -> dispatch(sbn, fromBackfill = true) }
         }
         KeepAliveService.start(this)
     }
@@ -181,12 +195,14 @@ class CleanerListenerService : NotificationListenerService() {
     override fun onListenerDisconnected() {
         // 1.1.11 修复：断线必须先落标志，否则看门狗用实例存在误判"已连接"，永远不会自愈重绑
         listenerConnected = false
+        android.util.Log.w("NCWatch", "listener DISCONNECTED — requesting rebind")
         // 监听断线（进程被杀后系统回收绑定）→ 自愈重绑（Plan.md §7.1）
         requestRebindCompat(this)
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
+        android.util.Log.w("NCWatch", "listener onDestroy")
         if (activeInstance === this) activeInstance = null
         appScope?.cancel()
         appScope = null
@@ -194,7 +210,13 @@ class CleanerListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        dispatch(sbn, fromBackfill = false)
+    }
+
+    /** 实时回调与重连补扫共用入口；fromBackfill 决定走慢速补扫通道（1.2.1） */
+    private fun dispatch(sbn: StatusBarNotification, fromBackfill: Boolean) {
         if (sbn.packageName == SELF_PACKAGE) return
+        android.util.Log.i("NCWatch", "posted pkg=${sbn.packageName} connected=$listenerConnected backfill=$fromBackfill")
         val notification: Notification = sbn.notification ?: return
         if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val extras = notification.extras
@@ -205,11 +227,29 @@ class CleanerListenerService : NotificationListenerService() {
             .distinct().joinToString(" ").ifEmpty { content }
         if (title.isEmpty() && text.isEmpty()) return
 
+        // 1.1.13：灭屏瞬间 CPU 可能被挂起导致打分/入库中断，短超时部分唤醒锁保证处理完成
+        // 1.2.0（ImprovePlan P1-4）：仅灭屏时加锁——亮屏时 CPU 本就唤醒，无需锁
+        runCatching {
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            if (pm?.isInteractive == false) {
+                pm.newWakeLock(
+                    android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                    "NotiCleaner:handle",
+                )?.acquire(10_000)
+            }
+        }
+
         val scope = appScope ?: return
-        scope.launch { handle(sbn, title, text) }
+        val dispatcher = if (fromBackfill) backfillDispatcher else realtimeDispatcher
+        scope.launch(dispatcher ?: Dispatchers.Default) { handle(sbn, title, text, fromBackfill) }
     }
 
-    private suspend fun handle(sbn: StatusBarNotification, title: String, content: String) {
+    private suspend fun handle(
+        sbn: StatusBarNotification,
+        title: String,
+        content: String,
+        fromBackfill: Boolean,
+    ) {
         val locator = ServiceLocator
         val dao: NotificationDao = locator.db.notificationDao()
         val modelRepo: ModelRepository = locator.modelRepo
@@ -223,6 +263,17 @@ class CleanerListenerService : NotificationListenerService() {
 
         val postTime = sbn.postTime
         val joined = listOf(title, content).filter { it.isNotEmpty() }.joinToString("\n")
+
+        // 1.2.0（ImprovePlan P1-6）：重连补扫快路径——槽位已入库且标题/内容/时间未变 → 整体跳过，
+        // 消除重连 backfill 风暴的重复推理与写库（正式查重在下方 insertMutex 内，此处仅无锁预检）
+        val preExisting = runCatching { dao.findByKey(sbn.key) }.getOrNull()
+        if (preExisting != null &&
+            preExisting.title == title &&
+            preExisting.content == content &&
+            preExisting.postTime == postTime
+        ) {
+            return
+        }
 
         // ---- 决策（1.0.7：阈值/拦截模式走内存缓存，热路径零 IO）----
         var decision = DECISION_PASSED
@@ -241,19 +292,20 @@ class CleanerListenerService : NotificationListenerService() {
                     else -> {
                         val normalized = cc.ytdttj.noticleaner.ai.FeatureHasher.normalize(joined)
                         val hardAllow = normalized.length < 4 ||
-                            HARD_ALLOW_WORDS.any { joined.contains(it, ignoreCase = true) }
+                            FilterGuards.HARD_ALLOW_WORDS.any { joined.contains(it, ignoreCase = true) }
                         if (!hardAllow) {
                             // 模型不可用（assets 缺失/损坏）时跳过打分，按放行处理
                             // 1.1.11：带通道偏置打分（同 App 同渠道的学习成果直接生效）
+                            // 1.2.0（ImprovePlan P1-2/P1-3）：复用已 normalize 文本 + 打分 LRU 缓存
                             val chKey = if (channel.isNotEmpty()) {
                                 cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(pkg, channel)
                             } else {
                                 null
                             }
-                            val p0 = modelRepo.get()?.score(joined, chKey) ?: 0.0
+                            val p0 = modelRepo.scoreCached(pkg, normalized, chKey) ?: 0.0
                             // 1.1.11：">"/">>" 强广告标记（覆盖全角 ＞），命中抬到 0.95
                             val p = if (joined.contains('>') || joined.contains('＞')) {
-                                maxOf(p0, SPAM_MARK_BOOST)
+                                maxOf(p0, FilterGuards.SPAM_MARK_BOOST)
                             } else {
                                 p0
                             }
@@ -270,7 +322,12 @@ class CleanerListenerService : NotificationListenerService() {
         if (decision == DECISION_FILTERED_BY_AI || decision == DECISION_FILTERED_BY_RULE) {
             // 清除失败（时机过早等）也记入待取消队列，重连时补撤（1.1.11 兜底）
             val ok = runCatching { cancelNotification(sbn.key) }.isSuccess
-            if (!ok) pendingCancels.add(sbn.key)
+            if (!ok) {
+                android.util.Log.w("NCWatch", "cancel failed, queued: $decision ${sbn.key.takeLast(12)}")
+                pendingCancels.add(sbn.key)
+            } else {
+                android.util.Log.i("NCWatch", "filtered+$decision p=$probability")
+            }
         } else {
             // island 分支：放行通知的支付信息上岛（islandplan.md §三；内部全静默降级）
             runCatching {
@@ -330,6 +387,13 @@ class CleanerListenerService : NotificationListenerService() {
         runCatching { ServiceLocator.settings.incrementFiltered(ai = isAi) }
     }
 
+    /**
+     * 应用名解析（失败回退包名并随 appNameCache 缓存——进程重启后自然重试）。
+     * 根因备注（1.2.3 诊断日志 20260918）：MIUI Android 16 上部分包（如带 systemui
+     * 主题覆盖引用的应用）加载资源时因设备侧 /data/resource-cache 的 RRO idmap 文件
+     * 缺失/损坏而抛 IOException——属设备状态（主题切换后出现，重启自愈），APP 无法恢复
+     * label 本身；职责 = 不崩溃 + 快速兜底 + 不重复刷屏。
+     */
     private fun appLabel(pkg: String): String = runCatching {
         packageManager.getApplicationLabel(
             packageManager.getApplicationInfo(pkg, 0),

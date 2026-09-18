@@ -198,6 +198,42 @@ class SettingsViewModel(
         ServiceLocator.keepAlive.openListenerSettings()
     }
 
+    /** 1.2.1：手动修复通知监听（摘除→写回强制重绑；Shizuku 优先，Root 兜底） */
+    fun repairListener() {
+        if (_execBusy.value) return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _execBusy.value = true
+            val executor = when {
+                runCatching {
+                    rikka.shizuku.Shizuku.pingBinder() &&
+                        rikka.shizuku.Shizuku.checkSelfPermission() ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                }.getOrDefault(false) -> ShizukuExecutor
+                ServiceLocator.keepAlive.isRootAvailable() -> RootExecutor
+                else -> {
+                    _execBusy.value = false
+                    _toast.value = "需要 Shizuku（已授权）或 Root 才能强制修复；普通用户可直接开关一次通知监听权限"
+                    return@launch
+                }
+            }
+            _execResult.value = runCatching {
+                cc.ytdttj.noticleaner.notify.ListenerRepair.repair(executor)
+            }.getOrElse { "修复失败: $it" }
+            _execBusy.value = false
+            refreshKeepAlive()
+        }
+    }
+
+    /** 1.2.1：跳转无障碍设置（保活守护层） */
+    fun openAccessibilitySettings() {
+        runCatching {
+            ServiceLocator.appContext.startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+
     fun resetModel() {
         viewModelScope.launch {
             ServiceLocator.db.notificationDao().clearLearned()
@@ -529,6 +565,78 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     actionLabel = null,
                     onAction = {},
                 )
+                AdvancedRow(
+                    label = "无障碍保活",
+                    desc = "开启「保活守护」无障碍服务：系统绑定的第二条生命线，不读取屏幕内容",
+                    ok = keepAlive.accessibilityEnabled,
+                    actionLabel = if (keepAlive.accessibilityEnabled) null else "去开启",
+                    onAction = { vm.openAccessibilitySettings() },
+                )
+                AdvancedRow(
+                    label = "修复通知监听",
+                    desc = "监听断连且无法自愈时的强制修复（需 Shizuku 已授权或 Root）",
+                    ok = keepAlive.listenerEnabled,
+                    actionLabel = "修复",
+                    onAction = { vm.repairListener() },
+                )
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+
+        // ---- 诊断日志导出（1.2.1） ----
+        var exporting by remember { mutableStateOf(false) }
+        val exportScope = androidx.compose.runtime.rememberCoroutineScope()
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("诊断", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "导出运行日志（含监听状态/过滤决策/看门狗记录），生成后可通过微信/邮箱发送给开发者排查问题。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    enabled = !exporting,
+                    onClick = {
+                        exporting = true
+                        exportScope.launch {
+                            val file = runCatching {
+                                cc.ytdttj.noticleaner.diagnostics.DiagExporter.export(context)
+                            }.getOrNull()
+                            exporting = false
+                            if (file == null) {
+                                android.widget.Toast.makeText(context, "日志导出失败", android.widget.Toast.LENGTH_SHORT).show()
+                                return@launch
+                            }
+                            runCatching {
+                                val uri = androidx.core.content.FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    file,
+                                )
+                                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                    putExtra(
+                                        android.content.Intent.EXTRA_SUBJECT,
+                                        "NotiCleaner 诊断日志 ${file.name}",
+                                    )
+                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(
+                                    android.content.Intent.createChooser(send, "分享诊断日志")
+                                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }.onFailure {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "已保存：${file.path}",
+                                    android.widget.Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        }
+                    },
+                ) { Text(if (exporting) "导出中…" else "导出诊断日志") }
             }
         }
         Spacer(Modifier.height(24.dp))
