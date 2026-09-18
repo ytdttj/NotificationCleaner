@@ -216,6 +216,22 @@ class SettingsViewModel(
 
     private fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
+    /** 管线直接注入（主模拟路径，绕开 shell 通知不投递给监听器的限制） */
+    fun simulateDirect(pkg: String, title: String, content: String) {
+        if (_simulateBusy.value) return
+        if (title.isBlank() && content.isBlank()) {
+            _toast.value = "标题和内容不能同时为空"
+            return
+        }
+        _simulateBusy.value = true
+        cc.ytdttj.noticleaner.notify.island.IslandNotifier.postSimulated(
+            ServiceLocator.appContext, pkg, title, content,
+        ) { msg ->
+            _simulateBusy.value = false
+            _toast.value = msg
+        }
+    }
+
     fun requestIgnoreBattery() {
         ServiceLocator.keepAlive.requestIgnoreBatteryOptimization()
     }
@@ -578,10 +594,22 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
-                androidx.compose.material3.Button(
-                    enabled = !simulateBusy,
-                    onClick = { vm.simulateNotification(simPkg, simTitle, simContent) },
-                ) { Text(if (simulateBusy) "发送中…" else "发送模拟通知") }
+                Row {
+                    androidx.compose.material3.Button(
+                        enabled = !simulateBusy,
+                        onClick = { vm.simulateDirect(simPkg, simTitle, simContent) },
+                    ) { Text(if (simulateBusy) "发送中…" else "注入管线（推荐）") }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        enabled = !simulateBusy,
+                        onClick = { vm.simulateNotification(simPkg, simTitle, simContent) },
+                    ) { Text("Shell 通知方式") }
+                }
+                Text(
+                    "注入管线 = 跳过系统通知直接测试上岛链路（推荐，HyperOS 不投递 shell 通知给监听器）；Shell 通知方式 = 仅验证通知栏投递。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                )
             }
         }
         Spacer(Modifier.height(12.dp))

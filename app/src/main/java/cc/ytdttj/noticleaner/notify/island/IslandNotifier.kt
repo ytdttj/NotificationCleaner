@@ -161,6 +161,51 @@ object IslandNotifier {
         IslandTrace.log("岛通知已入队 (id=$id, 盲窗=${bypassMs}ms)，等待盲窗执行器结果…")
     }
 
+    /**
+     * 管线直接注入（islandv2plan P2-3，主模拟路径）：
+     * 不依赖系统通知投递（HyperOS 不把 shell 通知投给第三方监听器），直接走
+     * 金额解析 → 岛通知构建 → 盲窗发送。测试路径 showNotification=true 留痕。
+     */
+    fun postSimulated(context: Context, pkg: String, title: String, content: String, onResult: (String) -> Unit) {
+        val label = PACKAGE_LABELS[pkg] ?: pkg
+        val payment = runCatching { PaymentExtractor.extract(title, content) }
+            .getOrElse { IslandTrace.log("✗ 注入：解析异常 $it"); null }
+        if (payment == null) {
+            IslandTrace.log("✗ 注入：金额解析失败（需含币种特征，如 ¥25.00）")
+            onResult("未解析到金额——模拟文案需含币种特征（如 ¥25.00 / USD 12.34 / 25元）")
+            return
+        }
+        IslandTrace.log("管线注入: pkg=$pkg 金额=${payment.capsuleText.trim()}")
+        val appContext = context.applicationContext
+        Thread {
+            val result = runCatching {
+                val appName = PACKAGE_LABELS[pkg] ?: appLabel(appContext, pkg)
+                val icon = runCatching {
+                    IslandParamsBuilder.drawableToBitmap(
+                        appContext.packageManager.getApplicationIcon(pkg),
+                    )
+                }.getOrNull()
+                val notif = IslandParamsBuilder.build(
+                    context = appContext,
+                    appName = appName,
+                    payment = payment,
+                    title = title,
+                    content = content,
+                    sourceIcon = icon,
+                    contentIntent = null,
+                    islandTimeoutSec = 120,
+                    showNotification = true, // 测试期：岛被拒时通知栏留痕，判别认证拒绝
+                )
+                val id = nextId.updateAndGet { cur ->
+                    if (cur >= NOTIF_ID_LAST) NOTIF_ID_FIRST else cur + 1
+                }
+                IslandBypassExecutor.post(appContext, id, notif, bypassMs)
+                "已注入管线（金额 ${payment.capsuleText.trim()}），结果见诊断日志与通知栏"
+            }.getOrElse { "注入失败: ${it.message}" }
+            android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(result) }
+        }.start()
+    }
+
     /** 设置页"发送测试岛"：走完整盲窗链路，结果回调主线程 */
     fun sendTest(context: Context, onResult: (String) -> Unit) {
         if (!IslandBypassExecutor.isReady()) {
@@ -183,6 +228,7 @@ object IslandNotifier {
                     sourceIcon = null,
                     contentIntent = null,
                     islandTimeoutSec = 60,
+                    showNotification = true,
                 )
                 IslandBypassExecutor.post(appContext, NOTIF_ID_FIRST, notif, bypassMs)
                 "测试岛通知已发送"

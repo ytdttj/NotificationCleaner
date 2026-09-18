@@ -58,27 +58,32 @@ object IslandBypassExecutor {
         single.execute { runBypass(appContext, notificationId, notification, bypassMs) }
     }
 
+    private enum class BlindMode { NONE, BINDER, IPTABLES }
+
     private fun runBypass(context: Context, notificationId: Int, notification: Notification, bypassMs: Long) {
         val uid = resolveXmsfUid(context)
         if (uid == -1) IslandTrace.log("✗ 盲窗：获取 xmsf UID 失败（com.xiaomi.xmsf 不存在？）")
-        var blocked = false
+        var mode = BlindMode.NONE
         try {
-            if (uid != -1) blocked = blockXmsf(uid)
-            if (!blocked) {
+            if (uid != -1) mode = blockXmsf(uid)
+            if (mode == BlindMode.NONE) {
                 IslandTrace.log("⚠ 盲窗未开启（Shizuku/Binder 失败），无保护直发岛通知")
                 Log.w(TAG, "xmsf network block unavailable; posting without bypass")
             }
             context.getSystemService(NotificationManager::class.java)
                 .notify(notificationId, notification)
             IslandTrace.log("岛通知已提交系统 (id=$notificationId)")
-            if (blocked) Thread.sleep(bypassMs.coerceIn(50, 500))
+            if (mode != BlindMode.NONE) Thread.sleep(bypassMs.coerceIn(50, 500))
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         } catch (t: Throwable) {
             IslandTrace.log("✗ 岛通知提交失败: $t")
             Log.e(TAG, "island post failed", t)
         } finally {
-            if (blocked && uid != -1) unblockXmsf(uid)
+            if (mode != BlindMode.NONE && uid != -1) {
+                if (mode == BlindMode.IPTABLES) unblockXmsfIptables(uid)
+                else unblockXmsfBinder(uid)
+            }
         }
     }
 
@@ -96,10 +101,10 @@ object IslandBypassExecutor {
         IConnectivityManager.Stub.asInterface(ShizukuBinderWrapper(platform.asBinder()))
     }.getOrNull()
 
-    private fun blockXmsf(uid: Int): Boolean {
+    private fun blockXmsf(uid: Int): BlindMode {
         val cm = connectivity() ?: run {
             IslandTrace.log("✗ 盲窗：ConnectivityService Binder 获取失败（Shizuku 不可用？）")
-            return false
+            return BlindMode.NONE
         }
         repeat(2) { attempt ->
             val result = runCatching {
@@ -108,16 +113,50 @@ object IslandBypassExecutor {
             }
             if (result.isSuccess) {
                 IslandTrace.log("✓ 盲窗开启：xmsf(uid=$uid) 网络已断 (chain=$CHAIN)")
-                return true
+                return BlindMode.BINDER
             }
-            IslandTrace.log("✗ 盲窗断网失败(${attempt + 1}/2): ${result.exceptionOrNull()?.javaClass?.simpleName}: ${result.exceptionOrNull()?.message}")
+            val e = result.exceptionOrNull()
+            IslandTrace.log("✗ 盲窗断网失败(${attempt + 1}/2): ${e?.javaClass?.simpleName}: ${e?.message}")
+            // NoSuchMethodError = 目标平台 IConnectivityManager 无此方法（HyperOS tethering APEX），
+            // 重试无意义，立即转 iptables
+            if (e is NoSuchMethodError) return blockXmsfIptables(uid)
             if (attempt == 0) runCatching { Thread.sleep(50) }
         }
-        return false
+        return blockXmsfIptables(uid)
+    }
+
+    // ---- iptables 回退（root；Binder 接口不存在时的盲窗路径）----
+
+    private fun execRoot(cmd: String): String = runCatching {
+        val p = ProcessBuilder("su", "-c", cmd).start()
+        val out = p.inputStream.bufferedReader().use { it.readText() }
+        val err = p.errorStream.bufferedReader().use { it.readText() }
+        p.waitFor()
+        (out + err).trim()
+    }.getOrElse { "ROOT_FAIL: $it" }
+
+    private fun blockXmsfIptables(uid: Int): BlindMode {
+        if (!rootAvailable()) {
+            IslandTrace.log("✗ iptables 盲窗需要 Root（未检测到 su），放弃盲窗")
+            return BlindMode.NONE
+        }
+        val v4 = execRoot("iptables -I OUTPUT -m owner --uid-owner $uid -j REJECT && echo OK4")
+        val ok4 = v4.contains("OK4")
+        if (!ok4) IslandTrace.log("✗ iptables v4: ${v4.take(120)}")
+        val v6 = execRoot("ip6tables -I OUTPUT -m owner --uid-owner $uid -j REJECT && echo OK6")
+        val ok6 = v6.contains("OK6")
+        if (!ok6) IslandTrace.log("⚠ ip6tables v6: ${v6.take(120)}")
+        return if (ok4 || ok6) {
+            IslandTrace.log("✓ 盲窗开启(iptables/root)：xmsf(uid=$uid) 网络已断 v4=$ok4 v6=$ok6")
+            BlindMode.IPTABLES
+        } else {
+            IslandTrace.log("✗ iptables 盲窗失败（v4/v6 均未生效）")
+            BlindMode.NONE
+        }
     }
 
     /** 只清本 uid 的 DENY 规则，不禁用整条 chain（避免影响同链其他应用） */
-    private fun unblockXmsf(uid: Int) {
+    private fun unblockXmsfBinder(uid: Int) {
         val cm = connectivity() ?: return
         repeat(2) { attempt ->
             val ok = runCatching {
@@ -132,4 +171,22 @@ object IslandBypassExecutor {
         IslandTrace.log("✗ 盲窗恢复失败（重试 2 次），xmsf 可能仍断网——请检查网络或重启")
         Log.e(TAG, "xmsf network restore failed after retries")
     }
+
+    private fun unblockXmsfIptables(uid: Int) {
+        val v4 = execRoot("iptables -D OUTPUT -m owner --uid-owner $uid -j REJECT && echo DEL4")
+        val v6 = execRoot("ip6tables -D OUTPUT -m owner --uid-owner $uid -j REJECT && echo DEL6")
+        val ok = v4.contains("DEL4") || v6.contains("DEL6")
+        if (ok) {
+            IslandTrace.log("✓ iptables 盲窗已还原 (v4=${v4.contains("DEL4")} v6=${v6.contains("DEL6")})")
+        } else {
+            IslandTrace.log("✗ iptables 还原失败: ${v4.take(80)} / ${v6.take(80)}")
+        }
+    }
+
+    private fun rootAvailable(): Boolean = runCatching {
+        val p = ProcessBuilder("su", "-c", "id").start()
+        val ok = p.waitFor(3, TimeUnit.SECONDS) && p.exitValue() == 0
+        p.destroy()
+        ok
+    }.getOrDefault(false)
 }

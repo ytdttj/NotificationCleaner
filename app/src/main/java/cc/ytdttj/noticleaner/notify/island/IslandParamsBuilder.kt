@@ -48,6 +48,7 @@ object IslandParamsBuilder {
         sourceIcon: Bitmap?,
         contentIntent: PendingIntent?,
         islandTimeoutSec: Int = 120,
+        showNotification: Boolean = false,
     ): Notification {
         ensureChannel(context)
 
@@ -129,7 +130,7 @@ object IslandParamsBuilder {
             put("enableFloat", false) // 更新时不自动展开
             put("islandFirstFloat", false)
             put("updatable", false) // 一次性提醒类
-            put("isShowNotification", false) // 不生成重复的通知栏条目
+            put("isShowNotification", showNotification) // 测试路径 true：岛被认证拒绝时通知栏至少留痕
             put("ticker", "$appName ${payment.capsuleText.trim()}")
             put("tickerPic", PIC_APP)
             put("baseInfo", baseInfo)
