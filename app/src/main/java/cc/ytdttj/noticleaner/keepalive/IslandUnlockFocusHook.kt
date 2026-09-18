@@ -29,9 +29,13 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
         private val CANDIDATE_CLASSES = listOf(
             "miui.systemui.notification.NotificationSettingsManager",
             "com.miui.systemui.notification.NotificationSettingsManager",
+            // 签名校验（island 包名无小米签名，可能在校验链第二层拒绝）
+            "miui.systemui.notification.focus.SignatureChecker",
+            "com.miui.systemui.notification.focus.SignatureChecker",
         )
         private val CANDIDATE_METHODS = setOf(
             "canShowFocus", "canShowFocusState", "canShowFocusStateApp", "canCustomFocus",
+            "checkSignatures",
         )
         private const val PLUGIN_FACTORY =
             "com.android.systemui.shared.plugins.PluginInstance\$PluginFactory"
@@ -60,8 +64,12 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
                     runCatching {
                         module.hook(m)
                             .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                            .intercept(AllowFocusHooker())
+                            .intercept(AllowFocusHooker(module, "$name.${m.name}"))
                         hooked++
+                        module.log(
+                            android.util.Log.INFO, "NCIslandHook",
+                            "hooked $name.${m.name}(${m.parameterTypes.joinToString { it.simpleName }})",
+                        )
                     }.onFailure { t ->
                         module.log(android.util.Log.WARN, "NCIslandHook", "hook $name.${m.name} failed: $t")
                     }
@@ -97,11 +105,30 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
     /**
      * 校验拦截器：参数中出现 island 包名（如 canShowFocusState(type, pkg)）→ 返回 true 放行；
      * 其余调用照常 proceed，不影响其他应用。
+     * 每次命中相关方法时 dump 方法名+参数形态到模块日志，用于诊断校验链。
      */
-    private class AllowFocusHooker : XposedInterface.Hooker {
+    private class AllowFocusHooker(private val module: XposedModule, private val methodName: String) :
+        XposedInterface.Hooker {
         override fun intercept(chain: XposedInterface.Chain): Any? {
+            val argsDump = chain.args.joinToString(",") { a ->
+                "${a?.javaClass?.simpleName}=${a?.toString()?.take(40)}"
+            }
             for (arg in chain.args) {
-                if (arg is String && arg == TARGET_PKG) return true
+                if (arg is String && arg == TARGET_PKG) {
+                    module.log(
+                        android.util.Log.INFO, "NCIslandHook",
+                        "intercept $methodName($argsDump) → ALLOW",
+                    )
+                    return true
+                }
+            }
+            // 包名相关但未精确匹配的调用也记录（诊断参数形态）
+            val related = chain.args.any { (it as? String)?.contains("noticleaner") == true }
+            if (related) {
+                module.log(
+                    android.util.Log.INFO, "NCIslandHook",
+                    "intercept $methodName($argsDump) → proceed",
+                )
             }
             return chain.proceed()
         }
