@@ -367,6 +367,13 @@ class CleanerListenerService : NotificationListenerService() {
         runCatching { ServiceLocator.settings.incrementFiltered(ai = isAi) }
     }
 
+    /**
+     * 应用名解析（失败回退包名并随 appNameCache 缓存——进程重启后自然重试）。
+     * 根因备注（1.2.3 诊断日志 20260918）：MIUI Android 16 上部分包（如带 systemui
+     * 主题覆盖引用的应用）加载资源时因设备侧 /data/resource-cache 的 RRO idmap 文件
+     * 缺失/损坏而抛 IOException——属设备状态（主题切换后出现，重启自愈），APP 无法恢复
+     * label 本身；职责 = 不崩溃 + 快速兜底 + 不重复刷屏。
+     */
     private fun appLabel(pkg: String): String = runCatching {
         packageManager.getApplicationLabel(
             packageManager.getApplicationInfo(pkg, 0),

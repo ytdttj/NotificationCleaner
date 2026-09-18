@@ -163,6 +163,10 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
 /** APP 图标：密度感知像素尺寸 + 全局 LruCache（键含尺寸）；自适应图标裁剪安全区；失败时圆底 + 首字符占位 */
 private val iconCache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(192)
 
+/** 1.2.3：图标渲染失败包的负缓存——MIUI RRO idmap 缓存损坏时 getApplicationIcon 抛 IOException，
+ *  不缓存会导致每次重组重试失败路径（系统日志刷屏 + 列表卡顿），见诊断日志 20260918 */
+private val failedIconKey = android.util.LruCache<String, Boolean>(192)
+
 @Composable
 fun AppIcon(packageName: String, size: Int = 40, fallbackText: String = packageName) {
     val context = LocalContext.current
@@ -172,7 +176,18 @@ fun AppIcon(packageName: String, size: Int = 40, fallbackText: String = packageN
     val bmp = remember(packageName, sizePx) {
         val cacheKey = "$packageName:$sizePx"
         iconCache.get(cacheKey) ?: run {
-            renderAppIcon(context, packageName, sizePx)?.also { iconCache.put(cacheKey, it) }
+            if (failedIconKey.get(packageName) == true) {
+                null // 已知失败包：不再重试系统资源加载，直接走占位
+            } else {
+                val rendered = renderAppIcon(context, packageName, sizePx)
+                if (rendered != null) {
+                    iconCache.put(cacheKey, rendered)
+                    rendered
+                } else {
+                    failedIconKey.put(packageName, true)
+                    null
+                }
+            }
         }
     }
     if (bmp != null) {
@@ -307,7 +322,12 @@ private fun NotificationDetail(
         Text(n.content.ifEmpty { "（无正文）" }, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(12.dp))
         Text("发送时间：${timeFmt.format(Date(n.postTime))}", style = MaterialTheme.typography.bodySmall)
-        Text("APP：${n.appName} (${n.packageName})", style = MaterialTheme.typography.bodySmall)
+        Text(
+            // 1.2.3：label 解析失败时 appName 即包名，避免重复显示两次
+            if (n.appName == n.packageName) "APP：${n.packageName}"
+            else "APP：${n.appName} (${n.packageName})",
+            style = MaterialTheme.typography.bodySmall,
+        )
         Text("发送通道：${n.channelId.ifEmpty { "（默认/未知）" }}", style = MaterialTheme.typography.bodySmall)
         Text("AI 判定：广告概率 ${(n.adProbability * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
 
