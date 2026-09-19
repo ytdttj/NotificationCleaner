@@ -623,17 +623,18 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     }
                     Switch(checked = islandEnabled, onCheckedChange = { vm.setIslandEnabled(it) })
                 }
-                Text("上岛应用（点击切换）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("上岛应用（勾选后，该应用含金额的收支通知才会上岛）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    cc.ytdttj.noticleaner.notify.island.IslandNotifier.PACKAGE_LABELS.forEach { (pkg, label) ->
-                        androidx.compose.material3.FilterChip(
-                            selected = pkg in islandPackages,
-                            onClick = { vm.toggleIslandPackage(pkg) },
-                            label = { Text(label) },
+                cc.ytdttj.noticleaner.notify.island.IslandNotifier.PACKAGE_LABELS.forEach { (pkg, label) ->
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 36.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.Checkbox(
+                            checked = pkg in islandPackages,
+                            onCheckedChange = { vm.toggleIslandPackage(pkg) },
                         )
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
                 Spacer(Modifier.height(8.dp))
