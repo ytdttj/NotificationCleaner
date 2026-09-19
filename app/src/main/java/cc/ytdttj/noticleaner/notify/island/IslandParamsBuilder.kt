@@ -50,6 +50,7 @@ object IslandParamsBuilder {
         islandTimeoutSec: Int = 120,
         showNotification: Boolean = false,
         autoExpandSec: Int = 5,
+        notificationId: Int = 0, // "已完成"按钮清除目标（0 = 不挂清除按钮）
     ): Notification {
         ensureChannel(context)
 
@@ -85,14 +86,17 @@ object IslandParamsBuilder {
             PaymentExtractor.Direction.OUT -> "支出"
             PaymentExtractor.Direction.UNKNOWN -> "收支"
         }
-        // 展开态正文：优先外币折算行，其次通知正文首行
-        val hintContent = payment.convertedCnyText
-            ?: content.lineSequence().firstOrNull { it.isNotBlank() }?.take(40).orEmpty()
+        // 展开态副标题：方向 + 通知原文（原通知怎么发就怎么显示）
+        val subtitle = buildString {
+            append(directionText)
+            val original = title.ifBlank { content }.take(60)
+            if (original.isNotBlank()) append(" · ").append(original.replace("\n", " "))
+        }
 
         val baseInfo = JSONObject().apply {
             put("type", 2)
-            put("title", "$appName · $directionText")
-            put("content", title.ifBlank { content.take(40) })
+            put("title", appName) // 标题 = 来源 App 名（支付宝/微信/招商银行…）
+            put("content", subtitle)
             put("colorTitle", "#000000")
             put("colorTitleDark", "#FFFFFF")
             put("colorContent", "#666666")
@@ -101,16 +105,32 @@ object IslandParamsBuilder {
             put("showContentDivider", false)
         }
         val picInfo = JSONObject().put("type", 1).put("pic", PIC_APP)
+
+        // 金额行："已完成"按钮（点击 → 广播取消通知 → 岛清除）
+        val actionKey = "miui.focus.action_dismiss"
+        val dismissPi = PendingIntent.getBroadcast(
+            context,
+            notificationId,
+            Intent(context, IslandDismissReceiver::class.java).apply {
+                putExtra(IslandDismissReceiver.EXTRA_NOTIF_ID, notificationId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val hintInfo = JSONObject().apply {
             put("type", 1)
             put("title", (if (payment.direction == PaymentExtractor.Direction.IN) "+" else if (payment.direction == PaymentExtractor.Direction.OUT) "-" else "") + payment.currency.display + payment.amountText)
             put("colorTitle", if (payment.direction == PaymentExtractor.Direction.IN) COLOR_IN else COLOR_OUT)
             put("colorTitleDark", if (payment.direction == PaymentExtractor.Direction.IN) "#7BD9A2" else "#FF9B82")
-            if (hintContent.isNotBlank()) {
-                put("content", hintContent)
-                put("colorContent", "#666666")
-                put("colorContentDark", "#B8B8B8")
-            }
+            // 按钮组件：金额行最右"已完成"
+            put("actionInfo", JSONObject().apply {
+                put("action", actionKey)
+                put("actionTitle", "已完成")
+                put("actionTitleColor", "#FFFFFF")
+                put("actionTitleColorDark", "#000000")
+                put("actionBgColor", "#1A1A1A")
+                put("actionBgColorDark", "#E0E0E0")
+                put("clickWithCollapse", true)
+            })
         }
 
         val paramIsland = JSONObject().apply {
@@ -141,7 +161,13 @@ object IslandParamsBuilder {
         }
 
         val pics = Bundle().apply {
-            val icon = sourceIcon?.let { android.graphics.drawable.Icon.createWithBitmap(it) }
+            // 来源 App 图标；无（如测试路径）时回退到本 App launcher 图标，保证展开态右侧始终有图
+            val drawable = sourceIcon?.let {
+                android.graphics.drawable.BitmapDrawable(context.resources, it)
+            } ?: runCatching {
+                context.packageManager.getApplicationIcon(context.packageName)
+            }.getOrNull()
+            val icon = drawableToBitmap(drawable)?.let { android.graphics.drawable.Icon.createWithBitmap(it) }
             icon?.let {
                 putParcelable(PIC_APP, it)
                 putParcelable("miui.focus.pic_ticker", it)
@@ -151,6 +177,16 @@ object IslandParamsBuilder {
         val extras = Bundle().apply {
             putString("miui.focus.param", JSONObject().put("param_v2", paramV2).toString())
             if (pics.size() > 0) putBundle("miui.focus.pics", pics)
+            // "已完成"按钮：HyperOS 通过 actionInfo.action key 引用原生 Action，点击触发 PendingIntent
+            if (notificationId != 0) {
+                val actions = Bundle().apply {
+                    putParcelable(
+                        actionKey,
+                        Notification.Action.Builder(null, "已完成", dismissPi).build(),
+                    )
+                }
+                putBundle("miui.focus.actions", actions)
+            }
         }
 
         val builder = Notification.Builder(context, CHANNEL_ID)

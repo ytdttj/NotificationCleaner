@@ -86,6 +86,11 @@
                 android:value="notification_filter_keepalive" />
         </service>
 
+        <!-- island 分支：超级岛"已完成"按钮（仅本应用 PendingIntent 可触发） -->
+        <receiver
+            android:name=".notify.island.IslandDismissReceiver"
+            android:exported="false" />
+
         <!-- 1.2.1：无障碍保活层（可选）：系统绑定的第二条生命线，空实现不读窗口内容 -->
         <service
             android:name=".notify.NotiGuardService"

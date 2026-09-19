@@ -137,6 +137,9 @@ object IslandNotifier {
         }.getOrNull()
         if (icon == null) IslandTrace.log("⚠ 来源图标获取失败（用系统占位）")
         val contentIntent = sbn.notification?.contentIntent
+        val id = nextId.updateAndGet { cur ->
+            if (cur >= NOTIF_ID_LAST) NOTIF_ID_FIRST else cur + 1
+        }
 
         val notification = runCatching {
             IslandParamsBuilder.build(
@@ -148,15 +151,13 @@ object IslandNotifier {
                 sourceIcon = icon,
                 contentIntent = contentIntent,
                 islandTimeoutSec = ISLAND_TIMEOUT_SEC,
+                notificationId = id,
             )
         }.getOrElse {
             IslandTrace.log("✗ 岛通知构建失败: $it")
             Log.w(TAG, "build island notification failed", it); return
         }
 
-        val id = nextId.updateAndGet { cur ->
-            if (cur >= NOTIF_ID_LAST) NOTIF_ID_FIRST else cur + 1
-        }
         IslandBypassExecutor.post(context, id, notification, bypassMs)
         IslandTrace.log("岛通知已入队 (id=$id, 盲窗=${bypassMs}ms)，等待盲窗执行器结果…")
     }
@@ -196,6 +197,9 @@ object IslandNotifier {
                         appContext.packageManager.getApplicationIcon(pkg),
                     )
                 }.getOrNull()
+                val id = nextId.updateAndGet { cur ->
+                    if (cur >= NOTIF_ID_LAST) NOTIF_ID_FIRST else cur + 1
+                }
                 val notif = IslandParamsBuilder.build(
                     context = appContext,
                     appName = appName,
@@ -206,11 +210,9 @@ object IslandNotifier {
                     contentIntent = null,
                     islandTimeoutSec = 120,
                     showNotification = true, // 测试期：岛被拒时通知栏留痕，判别认证拒绝
+                    notificationId = id,
                 )
                 if (delayMs > 0) Thread.sleep(delayMs) // 等用户回到桌面，避开前台抑制
-                val id = nextId.updateAndGet { cur ->
-                    if (cur >= NOTIF_ID_LAST) NOTIF_ID_FIRST else cur + 1
-                }
                 IslandBypassExecutor.post(appContext, id, notif, bypassMs)
                 "已注入管线（金额 ${payment.capsuleText.trim()}），结果见诊断日志与通知栏"
             }.getOrElse { "注入失败: ${it.message}" }
@@ -241,6 +243,7 @@ object IslandNotifier {
                     contentIntent = null,
                     islandTimeoutSec = 60,
                     showNotification = true,
+                    notificationId = NOTIF_ID_FIRST,
                 )
                 Thread.sleep(5000) // 等用户回到桌面，避开前台抑制（岛在 App 前台时不渲染）
                 IslandBypassExecutor.post(appContext, NOTIF_ID_FIRST, notif, bypassMs)
