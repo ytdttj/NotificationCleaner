@@ -68,6 +68,13 @@ class SettingsViewModel(
     val islandPackages = settings.islandPackages.stateIn(viewModelScope, SharingStarted.Eagerly, cc.ytdttj.noticleaner.notify.island.IslandNotifier.DEFAULT_PACKAGES)
     val islandDropBlind = settings.islandDropBlind.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /** 岛探测状态（实时刷新：保活动作完成后自动重新探测） */
+    private val _islandProbe = MutableStateFlow("探测系统支持中…")
+    val islandProbe: StateFlow<String> = _islandProbe
+
+    /** 通知模拟解锁（设置 tab 快速点击 5 次，1.3.0 beta2） */
+    val simUnlocked = settings.simUnlocked.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     private val _keepAlive = MutableStateFlow(KeepAliveStatus())
     val keepAlive: StateFlow<KeepAliveStatus> = _keepAlive
 
@@ -101,6 +108,48 @@ class SettingsViewModel(
                     rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
             }.getOrDefault(false)
             _keepAlive.value = ServiceLocator.keepAlive.status(shizukuOk)
+            // 保活状态变化后同步刷新岛探测（Shizuku 授权/白名单状态实时反映，1.3.0 beta2）
+            probeIsland()
+        }
+    }
+
+    /** 探测超级岛支持情况（OS 版本 + 白名单 hook 状态 + Shizuku），结果写入 islandProbe */
+    fun probeIsland() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val ctx = ServiceLocator.appContext
+            val protocol = runCatching {
+                android.provider.Settings.System.getInt(ctx.contentResolver, "notification_focus_protocol", 0)
+            }.getOrDefault(0)
+            val shizukuOk = runCatching {
+                rikka.shizuku.Shizuku.pingBinder() &&
+                    rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }.getOrDefault(false)
+            // 本地白名单状态：LSPosed hook 生效后为 true（官方 Q&A 的 canShowFocus 查询）
+            val canFocus = runCatching {
+                val extras = android.os.Bundle().apply { putString("package", ctx.packageName) }
+                ctx.contentResolver.call(
+                    android.net.Uri.parse("content://miui.statusbar.notification.public"),
+                    "canShowFocus", null, extras,
+                )?.getBoolean("canShowFocus", false)
+            }.getOrNull()
+            val lsp = ServiceLocator.keepAlive.isLspActive()
+            val osLine = when {
+                protocol >= 3 -> "系统：HyperOS 3 超级岛"
+                protocol == 2 -> "系统：焦点通知（OS2），无岛形态"
+                else -> "系统：不支持焦点通知/超级岛"
+            }
+            val hookLine = when (canFocus) {
+                true -> "白名单：已放行（hook 生效）"
+                false -> "白名单：未放行（LSPosed 未激活或未勾选系统界面作用域）"
+                null -> "白名单：无法查询"
+            }
+            val lspLine = when (lsp) {
+                true -> "LSPosed：模块已激活"
+                false -> "LSPosed：模块未激活"
+                null -> "LSPosed：未安装或无法检测"
+            }
+            val shizukuLine = if (shizukuOk) "Shizuku：已授权" else "Shizuku：未授权"
+            _islandProbe.value = listOf(osLine, hookLine, lspLine, shizukuLine).joinToString("\n")
         }
     }
 
@@ -131,40 +180,6 @@ class SettingsViewModel(
             val current = islandPackages.value
             val next = if (pkg in current) current - pkg else current + pkg
             settings.setIslandPackages(next)
-        }
-    }
-
-    /** 探测超级岛支持情况（OS 版本 + Shizuku + 本地白名单 hook 状态），结果回调主线程 */
-    fun probeIsland(onResult: (String) -> Unit) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val ctx = ServiceLocator.appContext
-            val protocol = runCatching {
-                android.provider.Settings.System.getInt(ctx.contentResolver, "notification_focus_protocol", 0)
-            }.getOrDefault(0)
-            val shizukuOk = runCatching {
-                rikka.shizuku.Shizuku.pingBinder() &&
-                    rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
-            }.getOrDefault(false)
-            // 本地白名单状态：LSPosed hook 生效后为 true（官方 Q&A 的 canShowFocus 查询）
-            val canFocus = runCatching {
-                val extras = android.os.Bundle().apply { putString("package", ctx.packageName) }
-                ctx.contentResolver.call(
-                    android.net.Uri.parse("content://miui.statusbar.notification.public"),
-                    "canShowFocus", null, extras,
-                )?.getBoolean("canShowFocus", false)
-            }.getOrNull()
-            val osLine = when {
-                protocol >= 3 -> "系统：HyperOS 3 超级岛"
-                protocol == 2 -> "系统：焦点通知（OS2），无岛形态"
-                else -> "系统：不支持焦点通知/超级岛"
-            }
-            val hookLine = when (canFocus) {
-                true -> "白名单：已放行（LSPosed hook 生效）"
-                false -> "白名单：未放行（hook 未生效，检查模块激活/作用域/重启）"
-                null -> "白名单：无法查询（非 HyperOS 或接口变更）"
-            }
-            val shizukuLine = if (shizukuOk) "Shizuku：已授权" else "Shizuku：未授权（上岛必需）"
-            onResult("$osLine\n$hookLine\n$shizukuLine")
         }
     }
 
@@ -365,6 +380,8 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
     val execResult by vm.execResult.collectAsState()
     val execBusy by vm.execBusy.collectAsState()
     var thresholdInput by remember(threshold) { mutableStateOf("%.2f".format(threshold)) }
+    val simUnlocked by vm.simUnlocked.collectAsState()
+    val islandProbe by vm.islandProbe.collectAsState()
     val manufacturerHint = remember { ServiceLocator.keepAlive.manufacturerAutoStartHint() }
 
     // 多任务隐藏：切换后立即应用（API 29+ 直接设置任务标记，不重建任务）
@@ -384,6 +401,18 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
     ) {
+        // ---- 拦截模式 ----
+        Card(Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("拦截模式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("关闭后仅标记不拦截，便于观察误杀（AI 仍打分并记录）", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = intercept, onCheckedChange = { vm.setInterceptMode(it) })
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
         // ---- 过滤阈值 ----
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
@@ -424,18 +453,6 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         }
         Spacer(Modifier.height(12.dp))
 
-        // ---- 拦截模式 ----
-        Card(Modifier.fillMaxWidth()) {
-            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("拦截模式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("关闭后仅标记不拦截，便于观察误杀（AI 仍打分并记录）", style = MaterialTheme.typography.bodySmall)
-                }
-                Switch(checked = intercept, onCheckedChange = { vm.setInterceptMode(it) })
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-
         // ---- 统计 ----
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
@@ -460,18 +477,6 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         }
         Spacer(Modifier.height(12.dp))
 
-        // ---- 模型信息 ----
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("AI 模型", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
-                Text(modelInfo, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = { vm.resetModel() }) { Text("重置模型（回到预训练基线）") }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-
         // ---- 多任务隐藏 ----
         Card(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -487,13 +492,122 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         }
         Spacer(Modifier.height(12.dp))
 
+        // ---- 权限检查（1.3.0 beta2：原「后台保活」，高级项折叠） ----
+        var permAdvancedOpen by remember { mutableStateOf(false) }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("权限检查", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                StatusRow("通知监听权限", keepAlive.listenerEnabled) { vm.openListenerSettings() }
+                StatusRow("电池优化白名单", keepAlive.ignoringBattery) { vm.requestIgnoreBattery() }
+                manufacturerHint?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Spacer(Modifier.height(8.dp))
+                }
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clickable { permAdvancedOpen = !permAdvancedOpen },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "高级权限（可选）",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(if (permAdvancedOpen) "收起" else "展开", style = MaterialTheme.typography.bodySmall)
+                }
+                if (permAdvancedOpen) {
+                    Spacer(Modifier.height(4.dp))
+                    AdvancedRow(
+                        label = "Shizuku 保活",
+                        desc = "免 Root 写入电池优化白名单 / 通知监听权限",
+                        ok = keepAlive.shizukuAvailable,
+                        actionLabel = if (keepAlive.shizukuAvailable) "应用" else "授权",
+                        onAction = { if (keepAlive.shizukuAvailable) vm.applyShizuku() else vm.requestShizuku() },
+                    )
+                    AdvancedRow(
+                        label = "Root 保活",
+                        desc = "以 Root 执行白名单与厂商自启动命令（最彻底）",
+                        ok = keepAlive.rootAvailable,
+                        actionLabel = "应用",
+                        onAction = { if (keepAlive.rootAvailable) vm.applyRoot() else vm.showToast("未检测到 Root（su）") },
+                    )
+                    AdvancedRow(
+                        label = "LSPosed 保活",
+                        desc = "安装 LSPosed 并激活本模块（作用域勾选「系统(android)」）后自动生效，重启手机完成",
+                        ok = keepAlive.lspDetected == true,
+                        actionLabel = null,
+                        onAction = {},
+                    )
+                    AdvancedRow(
+                        label = "无障碍保活",
+                        desc = "开启「保活守护」无障碍服务：系统绑定的第二条生命线，不读取屏幕内容",
+                        ok = keepAlive.accessibilityEnabled,
+                        actionLabel = if (keepAlive.accessibilityEnabled) null else "去开启",
+                        onAction = { vm.openAccessibilitySettings() },
+                    )
+                    AdvancedRow(
+                        label = "修复通知监听",
+                        desc = "监听断连且无法自愈时的强制修复（需 Shizuku 已授权或 Root）",
+                        ok = keepAlive.listenerEnabled,
+                        actionLabel = "修复",
+                        onAction = { vm.repairListener() },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+
+        // ---- 检查更新 ----
+        val updateVm: cc.ytdttj.noticleaner.update.UpdateViewModel =
+            viewModel(key = "update", factory = viewModelFactory { initializer { cc.ytdttj.noticleaner.update.UpdateViewModel() } })
+        val updateState by updateVm.state.collectAsState()
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("检查更新", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "当前版本 v${cc.ytdttj.noticleaner.BuildConfig.VERSION_NAME}（检查顺序：GitHub → Gitee）",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(
+                        enabled = updateState !is cc.ytdttj.noticleaner.update.UpdateState.Checking,
+                        onClick = { updateVm.checkUpdate() },
+                    ) { Text("检查") }
+                }
+            }
+        }
+        // ---- 高级功能（1.3.0 beta2：默认折叠） ----
+        var advancedOpen by remember { mutableStateOf(false) }
+        var confirmResetModel by remember { mutableStateOf(false) }
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { advancedOpen = !advancedOpen },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "高级功能",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(if (advancedOpen) "收起" else "展开", style = MaterialTheme.typography.bodySmall)
+                }
+                if (advancedOpen) {
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
         // ---- 超级岛支付提醒（island 分支实验功能） ----
         val islandEnabled by vm.islandEnabled.collectAsState()
         val islandPackages by vm.islandPackages.collectAsState()
         val islandDropBlind by vm.islandDropBlind.collectAsState()
-        var islandStatus by remember { mutableStateOf("探测系统支持中…") }
         var showDiag by remember { mutableStateOf(false) }
-        LaunchedEffect(Unit) { vm.probeIsland { islandStatus = it } }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("超级岛支付提醒（实验）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -505,7 +619,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(islandStatus, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(islandProbe, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                     Switch(checked = islandEnabled, onCheckedChange = { vm.setIslandEnabled(it) })
                 }
@@ -574,7 +688,9 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         }
         Spacer(Modifier.height(12.dp))
 
-        // ---- 通知模拟（island 测试：Shell 身份发通知进完整管线） ----
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))        // ---- 通知模拟（island 测试：Shell 身份发通知进完整管线） ----
         val simulateBusy by vm.simulateBusy.collectAsState()
         var simPkg by remember { mutableStateOf("com.cmbchina.cmb.plainpinkage") }
         var simTitle by remember { mutableStateOf("") }
@@ -646,140 +762,30 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         }
         Spacer(Modifier.height(12.dp))
 
-        // ---- 后台保活卡片 ----
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("后台保活", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                StatusRow("通知监听权限", keepAlive.listenerEnabled) { vm.openListenerSettings() }
-                StatusRow("电池优化白名单", keepAlive.ignoringBattery) { vm.requestIgnoreBattery() }
-                manufacturerHint?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
+                    // ---- AI 模型（重置需二次确认） ----
+                    Text("AI 模型", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(modelInfo, style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(8.dp))
-                }
-                HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
-                // ---- 高级保活（非必需，用户主动启用） ----
-                Text("高级保活（可选）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
-                AdvancedRow(
-                    label = "Shizuku 保活",
-                    desc = "免 Root 写入电池优化白名单 / 通知监听权限",
-                    ok = keepAlive.shizukuAvailable,
-                    actionLabel = if (keepAlive.shizukuAvailable) "应用" else "授权",
-                    onAction = { if (keepAlive.shizukuAvailable) vm.applyShizuku() else vm.requestShizuku() },
-                )
-                AdvancedRow(
-                    label = "Root 保活",
-                    desc = "以 Root 执行白名单与厂商自启动命令（最彻底）",
-                    ok = keepAlive.rootAvailable,
-                    actionLabel = "应用",
-                    onAction = { if (keepAlive.rootAvailable) vm.applyRoot() else vm.showToast("未检测到 Root（su）") },
-                )
-                AdvancedRow(
-                    label = "LSPosed 保活",
-                    desc = "安装 LSPosed 并激活本模块（作用域勾选「系统(android)」）后自动生效，重启手机完成",
-                    ok = keepAlive.lspDetected == true,
-                    actionLabel = null,
-                    onAction = {},
-                )
-                AdvancedRow(
-                    label = "无障碍保活",
-                    desc = "开启「保活守护」无障碍服务：系统绑定的第二条生命线，不读取屏幕内容",
-                    ok = keepAlive.accessibilityEnabled,
-                    actionLabel = if (keepAlive.accessibilityEnabled) null else "去开启",
-                    onAction = { vm.openAccessibilitySettings() },
-                )
-                AdvancedRow(
-                    label = "修复通知监听",
-                    desc = "监听断连且无法自愈时的强制修复（需 Shizuku 已授权或 Root）",
-                    ok = keepAlive.listenerEnabled,
-                    actionLabel = "修复",
-                    onAction = { vm.repairListener() },
-                )
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-
-        // ---- 诊断日志导出（1.2.1） ----
-        var exporting by remember { mutableStateOf(false) }
-        val exportScope = androidx.compose.runtime.rememberCoroutineScope()
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("诊断", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "导出运行日志（含监听状态/过滤决策/看门狗记录），生成后可通过微信/邮箱发送给开发者排查问题。",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(
-                    enabled = !exporting,
-                    onClick = {
-                        exporting = true
-                        exportScope.launch {
-                            val file = runCatching {
-                                cc.ytdttj.noticleaner.diagnostics.DiagExporter.export(context)
-                            }.getOrNull()
-                            exporting = false
-                            if (file == null) {
-                                android.widget.Toast.makeText(context, "日志导出失败", android.widget.Toast.LENGTH_SHORT).show()
-                                return@launch
-                            }
-                            runCatching {
-                                val uri = androidx.core.content.FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    file,
-                                )
-                                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                                    putExtra(
-                                        android.content.Intent.EXTRA_SUBJECT,
-                                        "NotiCleaner 诊断日志 ${file.name}",
-                                    )
-                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                context.startActivity(
-                                    android.content.Intent.createChooser(send, "分享诊断日志")
-                                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-                                )
-                            }.onFailure {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "已保存：${file.path}",
-                                    android.widget.Toast.LENGTH_LONG,
-                                ).show()
-                            }
-                        }
-                    },
-                ) { Text(if (exporting) "导出中…" else "导出诊断日志") }
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-
-        // ---- 检查更新 ----
-        val updateVm: cc.ytdttj.noticleaner.update.UpdateViewModel =
-            viewModel(key = "update", factory = viewModelFactory { initializer { cc.ytdttj.noticleaner.update.UpdateViewModel() } })
-        val updateState by updateVm.state.collectAsState()
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("检查更新", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "当前版本 v${cc.ytdttj.noticleaner.BuildConfig.VERSION_NAME}（检查顺序：GitHub → Gitee）",
-                            style = MaterialTheme.typography.bodySmall,
+                    OutlinedButton(onClick = { confirmResetModel = true }) { Text("重置模型（回到预训练基线）") }
+                    if (confirmResetModel) {
+                        androidx.compose.material3.AlertDialog(
+                            onDismissRequest = { confirmResetModel = false },
+                            title = { Text("确认重置模型？") },
+                            text = { Text("将清除所有学习标注，模型回到预训练基线。已拦截统计不受影响，此操作不可撤销。") },
+                            confirmButton = {
+                                TextButton(onClick = { vm.resetModel(); confirmResetModel = false }) { Text("确认重置") }
+                            },
+                            dismissButton = { TextButton(onClick = { confirmResetModel = false }) { Text("取消") } },
                         )
                     }
-                    OutlinedButton(
-                        enabled = updateState !is cc.ytdttj.noticleaner.update.UpdateState.Checking,
-                        onClick = { updateVm.checkUpdate() },
-                    ) { Text("检查") }
                 }
             }
         }
+        Spacer(Modifier.height(12.dp))
         when (val s = updateState) {
             is cc.ytdttj.noticleaner.update.UpdateState.Checking -> UpdateStatusDialog(
                 title = "正在检查更新…", text = "依次请求 GitHub / Gitee",

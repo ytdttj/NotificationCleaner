@@ -193,6 +193,11 @@ fun MainScaffold() {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: "history"
+
+    // ---- 1.3.0 beta2：设置 tab 快速点击 5 次 → 解锁通知模拟（隐藏测试功能） ----
+    val settingsTaps = remember { mutableListOf<Long>() }
+    var showSimUnlockDialog by remember { mutableStateOf(false) }
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -200,6 +205,15 @@ fun MainScaffold() {
                     NavigationBarItem(
                         selected = currentRoute == tab.route,
                         onClick = {
+                            if (tab.route == "settings") {
+                                val now = System.currentTimeMillis()
+                                settingsTaps.add(now)
+                                while (settingsTaps.size > 5) settingsTaps.removeAt(0)
+                                if (settingsTaps.size == 5 && now - settingsTaps.first() < 3000) {
+                                    settingsTaps.clear()
+                                    showSimUnlockDialog = true
+                                }
+                            }
                             navController.navigate(tab.route) {
                                 popUpTo(navController.graph.startDestinationId) { saveState = true }
                                 launchSingleTop = true
@@ -263,5 +277,24 @@ fun MainScaffold() {
                 )
             }
         }
+    }
+
+    if (showSimUnlockDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showSimUnlockDialog = false },
+            title = { Text("启用通知模拟？") },
+            text = { Text("通知模拟为隐藏测试功能：可模拟银行/支付类通知进入过滤管线与超级岛，普通用户无需开启。") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    showSimUnlockDialog = false
+                    cc.ytdttj.noticleaner.ServiceLocator.appScope.launch {
+                        cc.ytdttj.noticleaner.ServiceLocator.settings.setSimUnlocked(true)
+                    }
+                }) { Text("启用") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showSimUnlockDialog = false }) { Text("取消") }
+            },
+        )
     }
 }

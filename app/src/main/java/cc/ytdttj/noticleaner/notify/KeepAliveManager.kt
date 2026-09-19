@@ -34,8 +34,22 @@ class KeepAliveManager(private val context: Context) {
             rootAvailable = isRootAvailable(),
             shizukuAvailable = shizukuOk,
             accessibilityEnabled = NotiGuardService.isEnabledInSettings(context),
+            lspDetected = isLspActive(),
         )
     }
+
+    /**
+     * LSPosed 模块激活检测（1.3.0 beta2 修复"LSPosed 一直不可用"）：
+     * LSPosed 启用模块时会把模块写入 Settings.Secure.enabled_xposed_modules。
+     * - true/false：设备有 LSPosed，本模块已启用/未启用
+     * - null：无 LSPosed（或未授予读取），无法检测
+     */
+    fun isLspActive(): Boolean? = runCatching {
+        val raw = android.provider.Settings.Secure.getString(
+            context.contentResolver, "enabled_xposed_modules",
+        ) ?: return@runCatching null
+        raw.split(":").any { it.contains(context.packageName) }
+    }.getOrNull()
 
     /** 探测 Root（su 可执行；快速超时，需在 IO 线程调用） */
     fun isRootAvailable(): Boolean = runCatching {

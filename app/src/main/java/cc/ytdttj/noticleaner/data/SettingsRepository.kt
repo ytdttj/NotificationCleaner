@@ -96,6 +96,13 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[keyIslandDropBlind] = value }
     }
 
+    /** 通知模拟解锁（隐藏测试功能：设置 tab 快速点击 5 次后启用，1.3.0 beta2） */
+    private val keySimUnlocked = booleanPreferencesKey("sim_unlocked")
+    val simUnlocked: Flow<Boolean> = context.dataStore.data.map { it[keySimUnlocked] ?: false }
+    suspend fun setSimUnlocked(value: Boolean) {
+        context.dataStore.edit { it[keySimUnlocked] = value }
+    }
+
     suspend fun setThreshold(value: Float) {
         val clamped = value.coerceIn(0.5f, 1.0f)
         context.dataStore.edit { it[keyThreshold] = clamped }
