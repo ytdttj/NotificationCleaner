@@ -165,8 +165,19 @@ object IslandNotifier {
      * 管线直接注入（islandv2plan P2-3，主模拟路径）：
      * 不依赖系统通知投递（HyperOS 不把 shell 通知投给第三方监听器），直接走
      * 金额解析 → 岛通知构建 → 盲窗发送。测试路径 showNotification=true 留痕。
+     *
+     * delayMs：延迟发送（默认 5 秒）——HyperOS 前台抑制：App 自己在前台时不渲染
+     * 它的超级岛，岛要等应用退后台才出现（此时 islandFirstFloat 展开窗口已错过）。
+     * 延迟给用户时间回到桌面，让展开逻辑在通知真正到达时评估。
      */
-    fun postSimulated(context: Context, pkg: String, title: String, content: String, onResult: (String) -> Unit) {
+    fun postSimulated(
+        context: Context,
+        pkg: String,
+        title: String,
+        content: String,
+        delayMs: Long = 5000L,
+        onResult: (String) -> Unit,
+    ) {
         val label = PACKAGE_LABELS[pkg] ?: pkg
         val payment = runCatching { PaymentExtractor.extract(title, content) }
             .getOrElse { IslandTrace.log("✗ 注入：解析异常 $it"); null }
@@ -175,7 +186,7 @@ object IslandNotifier {
             onResult("未解析到金额——模拟文案需含币种特征（如 ¥25.00 / USD 12.34 / 25元）")
             return
         }
-        IslandTrace.log("管线注入: pkg=$pkg 金额=${payment.capsuleText.trim()}")
+        IslandTrace.log("管线注入: pkg=$pkg 金额=${payment.capsuleText.trim()} 延迟=${delayMs}ms")
         val appContext = context.applicationContext
         Thread {
             val result = runCatching {
@@ -196,6 +207,7 @@ object IslandNotifier {
                     islandTimeoutSec = 120,
                     showNotification = true, // 测试期：岛被拒时通知栏留痕，判别认证拒绝
                 )
+                if (delayMs > 0) Thread.sleep(delayMs) // 等用户回到桌面，避开前台抑制
                 val id = nextId.updateAndGet { cur ->
                     if (cur >= NOTIF_ID_LAST) NOTIF_ID_FIRST else cur + 1
                 }
@@ -230,6 +242,7 @@ object IslandNotifier {
                     islandTimeoutSec = 60,
                     showNotification = true,
                 )
+                Thread.sleep(5000) // 等用户回到桌面，避开前台抑制（岛在 App 前台时不渲染）
                 IslandBypassExecutor.post(appContext, NOTIF_ID_FIRST, notif, bypassMs)
                 "测试岛通知已发送"
             }.getOrElse { "发送失败: ${it.message}" }

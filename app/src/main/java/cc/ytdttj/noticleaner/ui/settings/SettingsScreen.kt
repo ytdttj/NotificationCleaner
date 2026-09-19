@@ -224,6 +224,7 @@ class SettingsViewModel(
             return
         }
         _simulateBusy.value = true
+        _toast.value = "5 秒后发送，请立刻回到桌面（App 在前台时系统不渲染岛）"
         cc.ytdttj.noticleaner.notify.island.IslandNotifier.postSimulated(
             ServiceLocator.appContext, pkg, title, content,
         ) { msg ->
@@ -606,7 +607,8 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     ) { Text("Shell 通知方式") }
                 }
                 Text(
-                    "注入管线 = 跳过系统通知直接测试上岛链路（推荐，HyperOS 不投递 shell 通知给监听器）；Shell 通知方式 = 仅验证通知栏投递。",
+                    "注入管线 = 跳过系统通知直接测试上岛链路（推荐）。点击后 5 秒才发送——请立刻回到桌面：" +
+                        "HyperOS 前台抑制，App 自己在前台时不渲染岛，展开态也只对后台到达的通知生效。Shell 通知方式仅验证通知栏投递。",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray,
                 )
