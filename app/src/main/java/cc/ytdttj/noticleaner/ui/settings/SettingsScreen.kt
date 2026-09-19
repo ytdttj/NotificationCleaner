@@ -129,7 +129,7 @@ class SettingsViewModel(
         }
     }
 
-    /** 探测超级岛支持情况（OS 版本 + Shizuku），结果回调主线程 */
+    /** 探测超级岛支持情况（OS 版本 + Shizuku + 本地白名单 hook 状态），结果回调主线程 */
     fun probeIsland(onResult: (String) -> Unit) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val ctx = ServiceLocator.appContext
@@ -140,13 +140,26 @@ class SettingsViewModel(
                 rikka.shizuku.Shizuku.pingBinder() &&
                     rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
             }.getOrDefault(false)
+            // 本地白名单状态：LSPosed hook 生效后为 true（官方 Q&A 的 canShowFocus 查询）
+            val canFocus = runCatching {
+                val extras = android.os.Bundle().apply { putString("package", ctx.packageName) }
+                ctx.contentResolver.call(
+                    android.net.Uri.parse("content://miui.statusbar.notification.public"),
+                    "canShowFocus", null, extras,
+                )?.getBoolean("canShowFocus", false)
+            }.getOrNull()
             val osLine = when {
                 protocol >= 3 -> "系统：HyperOS 3 超级岛"
                 protocol == 2 -> "系统：焦点通知（OS2），无岛形态"
                 else -> "系统：不支持焦点通知/超级岛"
             }
+            val hookLine = when (canFocus) {
+                true -> "白名单：已放行（LSPosed hook 生效）"
+                false -> "白名单：未放行（hook 未生效，检查模块激活/作用域/重启）"
+                null -> "白名单：无法查询（非 HyperOS 或接口变更）"
+            }
             val shizukuLine = if (shizukuOk) "Shizuku：已授权" else "Shizuku：未授权（上岛必需）"
-            onResult("$osLine\n$shizukuLine")
+            onResult("$osLine\n$hookLine\n$shizukuLine")
         }
     }
 
