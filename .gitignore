@@ -25,6 +25,7 @@ dist/
 /miuixplan.md
 /island.md
 /islandplan.md
+/islandv2plan.md
 ref/
 
 # ==== 训练相关：数据集与生成产物（脚本 train.py 保留上传） ====
