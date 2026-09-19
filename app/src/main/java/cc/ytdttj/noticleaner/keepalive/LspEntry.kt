@@ -32,9 +32,17 @@ class LspEntry : XposedModule() {
      * 仅当 LSPosed 作用域含 com.android.systemui 时回调。
      */
     override fun onPackageLoaded(param: XposedModuleInterface.PackageLoadedParam) {
-        if (param.packageName == "com.android.systemui") {
-            runCatching { IslandUnlockFocusHook(this).onPackageLoaded(param) }
-                .onFailure { log(Log.WARN, TAG, "island focus hook init failed: $it") }
+        when (param.packageName) {
+            // island 分支：SystemUI 焦点通知白名单解锁
+            "com.android.systemui" -> {
+                runCatching { IslandUnlockFocusHook(this).onPackageLoaded(param) }
+                    .onFailure { log(Log.WARN, TAG, "island focus hook init failed: $it") }
+            }
+            // island 分支：xmsf 焦点通知认证解锁（OS3 云认证 fail-closed，必须 hook）
+            "com.xiaomi.xmsf" -> {
+                runCatching { XmsfUnlockAuthHook(this).onPackageLoaded(param) }
+                    .onFailure { log(Log.WARN, TAG, "xmsf auth hook init failed: $it") }
+            }
         }
     }
 

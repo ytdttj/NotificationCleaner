@@ -61,29 +61,16 @@ object IslandBypassExecutor {
     private enum class BlindMode { NONE, BINDER, IPTABLES }
 
     private fun runBypass(context: Context, notificationId: Int, notification: Notification, bypassMs: Long) {
-        val uid = resolveXmsfUid(context)
-        if (uid == -1) IslandTrace.log("✗ 盲窗：获取 xmsf UID 失败（com.xiaomi.xmsf 不存在？）")
-        var mode = BlindMode.NONE
+        // 盲窗已停用（islandv2plan P3）：OS3 真机证实岛认证由 xmsf 联网完成且断网 fail-closed
+        // （iptables 断网 → ECONNREFUSED → onAuthFailed）。认证改由 LSPosed hook xmsf
+        // AuthSession 强制成功（XmsfUnlockAuthHook），无需断网。
         try {
-            if (uid != -1) mode = blockXmsf(uid)
-            if (mode == BlindMode.NONE) {
-                IslandTrace.log("⚠ 盲窗未开启（Shizuku/Binder 失败），无保护直发岛通知")
-                Log.w(TAG, "xmsf network block unavailable; posting without bypass")
-            }
             context.getSystemService(NotificationManager::class.java)
                 .notify(notificationId, notification)
-            IslandTrace.log("岛通知已提交系统 (id=$notificationId)")
-            if (mode != BlindMode.NONE) Thread.sleep(bypassMs.coerceIn(50, 500))
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
+            IslandTrace.log("岛通知已提交系统 (id=$notificationId, 认证由 xmsf hook 放行)")
         } catch (t: Throwable) {
             IslandTrace.log("✗ 岛通知提交失败: $t")
             Log.e(TAG, "island post failed", t)
-        } finally {
-            if (mode != BlindMode.NONE && uid != -1) {
-                if (mode == BlindMode.IPTABLES) unblockXmsfIptables(uid)
-                else unblockXmsfBinder(uid)
-            }
         }
     }
 
