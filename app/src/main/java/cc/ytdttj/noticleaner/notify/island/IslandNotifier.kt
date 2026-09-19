@@ -82,11 +82,16 @@ object IslandNotifier {
     @Volatile
     private var bypassMs: Long = 100L
 
+    /** 免 LSPosed 模式：iptables DROP 盲窗（需 Root），关闭时走 xmsf auth hook */
+    @Volatile
+    private var dropBlind: Boolean = false
+
     /** 由设置收集协程回调（避免 island 依赖 DataStore 的循环） */
-    fun onSettings(enabled: Boolean, packages: Set<String>, bypassMs: Long) {
+    fun onSettings(enabled: Boolean, packages: Set<String>, bypassMs: Long, dropBlind: Boolean) {
         this.enabled = enabled
         this.packages = packages.ifEmpty { DEFAULT_PACKAGES }
         this.bypassMs = bypassMs.coerceIn(50, 500)
+        this.dropBlind = dropBlind
     }
 
     /** 同文本 60s 去重：银行类 App 常用同一通知槽位反复刷新 */
@@ -158,7 +163,7 @@ object IslandNotifier {
             Log.w(TAG, "build island notification failed", it); return
         }
 
-        IslandBypassExecutor.post(context, id, notification, bypassMs)
+        IslandBypassExecutor.post(context, id, notification, bypassMs, dropBlind)
         IslandTrace.log("岛通知已入队 (id=$id, 盲窗=${bypassMs}ms)，等待盲窗执行器结果…")
     }
 
@@ -213,7 +218,7 @@ object IslandNotifier {
                     notificationId = id,
                 )
                 if (delayMs > 0) Thread.sleep(delayMs) // 等用户回到桌面，避开前台抑制
-                IslandBypassExecutor.post(appContext, id, notif, bypassMs)
+                IslandBypassExecutor.post(appContext, id, notif, bypassMs, dropBlind)
                 "已注入管线（金额 ${payment.capsuleText.trim()}），结果见诊断日志与通知栏"
             }.getOrElse { "注入失败: ${it.message}" }
             android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(result) }
@@ -246,7 +251,7 @@ object IslandNotifier {
                     notificationId = NOTIF_ID_FIRST,
                 )
                 Thread.sleep(5000) // 等用户回到桌面，避开前台抑制（岛在 App 前台时不渲染）
-                IslandBypassExecutor.post(appContext, NOTIF_ID_FIRST, notif, bypassMs)
+                IslandBypassExecutor.post(appContext, NOTIF_ID_FIRST, notif, bypassMs, dropBlind)
                 "测试岛通知已发送"
             }.getOrElse { "发送失败: ${it.message}" }
             android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(result) }

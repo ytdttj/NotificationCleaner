@@ -66,6 +66,7 @@ class SettingsViewModel(
     // ---- 超级岛（island 分支功能）----
     val islandEnabled = settings.islandEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val islandPackages = settings.islandPackages.stateIn(viewModelScope, SharingStarted.Eagerly, cc.ytdttj.noticleaner.notify.island.IslandNotifier.DEFAULT_PACKAGES)
+    val islandDropBlind = settings.islandDropBlind.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _keepAlive = MutableStateFlow(KeepAliveStatus())
     val keepAlive: StateFlow<KeepAliveStatus> = _keepAlive
@@ -119,6 +120,10 @@ class SettingsViewModel(
 
     fun setIslandEnabled(v: Boolean) {
         viewModelScope.launch { settings.setIslandEnabled(v) }
+    }
+
+    fun setIslandDropBlind(v: Boolean) {
+        viewModelScope.launch { settings.setIslandDropBlind(v) }
     }
 
     fun toggleIslandPackage(pkg: String) {
@@ -485,6 +490,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         // ---- 超级岛支付提醒（island 分支实验功能） ----
         val islandEnabled by vm.islandEnabled.collectAsState()
         val islandPackages by vm.islandPackages.collectAsState()
+        val islandDropBlind by vm.islandDropBlind.collectAsState()
         var islandStatus by remember { mutableStateOf("探测系统支持中…") }
         var showDiag by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) { vm.probeIsland { islandStatus = it } }
@@ -518,6 +524,17 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 }
                 Spacer(Modifier.height(8.dp))
                 HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("免 LSPosed 模式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "iptables DROP 盲窗放行认证（需 Root，不需要 LSPosed 模块）。关闭时走 xmsf hook。两者互不冲突。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(checked = islandDropBlind, onCheckedChange = { vm.setIslandDropBlind(it) })
+                }
                 Spacer(Modifier.height(8.dp))
                 Row {
                     OutlinedButton(enabled = islandEnabled, onClick = { vm.sendTestIsland() }) {

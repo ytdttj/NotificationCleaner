@@ -32,6 +32,7 @@ class SettingsRepository(private val context: Context) {
     private val keyIslandEnabled = booleanPreferencesKey("island_enabled")
     private val keyIslandPackages = stringSetPreferencesKey("island_packages")
     private val keyIslandBypassMs = intPreferencesKey("island_bypass_ms")
+    private val keyIslandDropBlind = booleanPreferencesKey("island_drop_blind")
 
     // ---- 1.2.0（ImprovePlan P2-2）：拦截计数内存累积 + 500ms 批量落盘 ----
     // 拦截风暴（一次弹 N 条广告）时不再逐条全文件读改写 DataStore。
@@ -80,12 +81,19 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.data.map { it[keyIslandPackages] ?: IslandNotifier.DEFAULT_PACKAGES }
     val islandBypassMs: Flow<Int> = context.dataStore.data.map { it[keyIslandBypassMs] ?: 100 }
 
+    /** 免 LSPosed 模式：iptables DROP 盲窗（需 Root），关闭时走 xmsf auth hook */
+    val islandDropBlind: Flow<Boolean> = context.dataStore.data.map { it[keyIslandDropBlind] ?: false }
+
     suspend fun setIslandEnabled(value: Boolean) {
         context.dataStore.edit { it[keyIslandEnabled] = value }
     }
 
     suspend fun setIslandPackages(value: Set<String>) {
         context.dataStore.edit { it[keyIslandPackages] = value }
+    }
+
+    suspend fun setIslandDropBlind(value: Boolean) {
+        context.dataStore.edit { it[keyIslandDropBlind] = value }
     }
 
     suspend fun setThreshold(value: Float) {

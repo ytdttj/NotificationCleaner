@@ -123,8 +123,15 @@ class CleanerListenerService : NotificationListenerService() {
                         s.islandEnabled,
                         s.islandPackages,
                         s.islandBypassMs,
-                    ) { e, p, b -> Triple(e, p, b) }.collect { (e, p, b) ->
-                        cc.ytdttj.noticleaner.notify.island.IslandNotifier.onSettings(e, p, b.toLong())
+                        s.islandDropBlind,
+                    ) { e, p, b, d -> listOf(e, p, b, d) }.collect { l ->
+                        @Suppress("UNCHECKED_CAST")
+                        cc.ytdttj.noticleaner.notify.island.IslandNotifier.onSettings(
+                            l[0] as Boolean,
+                            l[1] as Set<String>,
+                            (l[2] as Int).toLong(),
+                            l[3] as Boolean,
+                        )
                     }
                 }
             }
