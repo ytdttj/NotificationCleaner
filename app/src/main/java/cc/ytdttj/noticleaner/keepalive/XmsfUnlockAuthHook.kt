@@ -64,35 +64,35 @@ class XmsfUnlockAuthHook(private val module: XposedModule) {
             }
         }
     }
+}
 
-    private fun setIntField(instance: Any, fieldName: String, value: Int) {
-        var c: Class<*>? = instance.javaClass
-        while (c != null) {
-            runCatching {
-                val f = c.getDeclaredField(fieldName)
-                f.isAccessible = true
-                f.set(instance, value)
-                return
-            }.onFailure { e ->
-                if (e !is NoSuchFieldException) throw e
-            }
-            c = c.superclass
+private fun setIntField(instance: Any, fieldName: String, value: Int) {
+    var c: Class<*>? = instance.javaClass
+    while (c != null) {
+        runCatching {
+            val f = c.getDeclaredField(fieldName)
+            f.isAccessible = true
+            f.set(instance, value)
+            return
+        }.onFailure { e ->
+            if (e !is NoSuchFieldException) throw e
         }
+        c = c.superclass
     }
+}
 
-    private fun callNoArg(instance: Any?, methodName: String): Any? {
-        if (instance == null) return null
-        var c: Class<*>? = instance.javaClass
-        while (c != null) {
-            runCatching {
-                val m = c.getDeclaredMethod(methodName)
-                m.isAccessible = true
-                return m.invoke(instance)
-            }.onFailure { e ->
-                if (e !is NoSuchMethodException) throw e
-            }
-            c = c.superclass
+private fun callNoArg(instance: Any?, methodName: String): Any? {
+    if (instance == null) return null
+    var c: Class<*>? = instance.javaClass
+    while (c != null) {
+        runCatching {
+            val m = c.getDeclaredMethod(methodName)
+            m.isAccessible = true
+            return m.invoke(instance)
+        }.onFailure { e ->
+            if (e !is NoSuchMethodException) throw e
         }
-        return null
+        c = c.superclass
     }
+    return null
 }
