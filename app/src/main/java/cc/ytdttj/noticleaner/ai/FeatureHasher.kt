@@ -53,29 +53,52 @@ object FeatureHasher {
     }
 
     /** 文本 → (index, count) 原始计数（未 L2 归一化） */
-    fun counts(rawText: String): Map<Int, Int> = countsOfNormalized(normalize(rawText))
+    fun counts(rawText: String): FeatureCounts = countsOfNormalized(normalize(rawText))
 
     /**
      * 已归一化文本 → (index, count) 原始计数（1.2.0，ImprovePlan P1-2）：
      * 决策热路径先 normalize 做 hardAllow 检查，复用结果直接取 n-gram 计数，
      * 消除 [counts] 内部的第二次 normalize。与 [counts] 对同一文本结果完全一致。
+     *
+     * 1.3.2（P2-6）微优化：
+     * - 开放寻址 IntArray 表替代 HashMap（每通知 ~700 次 Integer 装箱 + 节点分配 → 零装箱），
+     *   system_server 侧 GC 收益最大；
+     * - FNV 直接从 CharSequence 逐 char 喂入（低字节、高字节依次，与 UTF-16LE 字节序列
+     *   逐位等价），省去每通知 2×len 的字节数组分配；
+     * - 迭代顺序与 Python dict 插入序本就不同序（P2-6 论证），ParityTest 靠 1e-4 容差覆盖。
      */
-    fun countsOfNormalized(normalizedText: String): Map<Int, Int> {
-        val units = normalizedText.toByteArray(Charsets.UTF_16LE)
-        val nUnits = units.size / 2
+    fun countsOfNormalized(normalizedText: String): FeatureCounts {
+        // 容量 2048（2 的幂）：单条通知 500 单元 × 1~3gram 去重后 ≤1497 键，负载因子 <0.75
+        val cap = 2048
+        val slotMask = cap - 1
+        val kArr = IntArray(cap)
+        val vArr = IntArray(cap)
+        var size = 0
         val mask = BUCKETS - 1
-        val counts = HashMap<Int, Int>()
-        for (n in NGRAM_MIN..NGRAM_MAX) {
-            val last = nUnits - n
+        val n = normalizedText.length
+        for (len in NGRAM_MIN..NGRAM_MAX) {
+            val last = n - len
             if (last < 0) continue
             for (start in 0..last) {
-                val off = start * 2
-                val len = n * 2
-                val idx = fnv1a32(units, off, len) and mask
-                counts[idx] = (counts[idx] ?: 0) + 1
+                val idx = fnv1a32Units(normalizedText, start, len) and mask
+                var slot = idx and slotMask
+                while (true) {
+                    val v = vArr[slot]
+                    if (v == 0) {
+                        kArr[slot] = idx
+                        vArr[slot] = 1
+                        size++
+                        break
+                    }
+                    if (kArr[slot] == idx) {
+                        vArr[slot] = v + 1
+                        break
+                    }
+                    slot = (slot + 1) and slotMask
+                }
             }
         }
-        return counts
+        return FeatureCounts(kArr, vArr, size)
     }
 
     /**
@@ -97,10 +120,52 @@ object FeatureHasher {
         }
         return h
     }
+
+    /**
+     * FNV-1a 32bit over UTF-16LE 字节序列（P2-6）：逐 char 依次贡献低字节 `c & 0xFF`、
+     * 高字节 `(c >>> 8) & 0xFF`，与 `toByteArray(UTF_16LE)` 的字节序列逐位等价，零分配。
+     */
+    private fun fnv1a32Units(s: String, start: Int, unitCount: Int): Int {
+        var h = 0x811C9DC5.toInt()
+        for (i in start until start + unitCount) {
+            val c = s[i].code
+            h = h xor (c and 0xFF)
+            h *= 0x01000193
+            h = h xor ((c ushr 8) and 0xFF)
+            h *= 0x01000193
+        }
+        return h
+    }
 }
 
-/** Python `text[:500]` 的 codepoint 语义截断（Kotlin String 按 UTF-16 单元索引） */
-internal fun String.takeCodepoints(n: Int): String {
+/**
+ * 开放寻址 n-gram 计数表（1.3.2 P2-6）：values[i] == 0 表示空槽（计数从 1 起，非零即占用）。
+ * capacity = keys.size（2 的幂）；有效条目数 = [size]。
+ */
+class FeatureCounts(
+    val keys: IntArray,
+    val values: IntArray,
+    val size: Int,
+) {
+    /** 遍历所有 (key, count) 项 */
+    inline fun forEach(action: (key: Int, count: Int) -> Unit) {
+        for (i in keys.indices) {
+            val v = values[i]
+            if (v != 0) action(keys[i], v)
+        }
+    }
+
+    /** 诊断/测试用：转为普通 Map */
+    fun asMap(): Map<Int, Int> {
+        val m = HashMap<Int, Int>(size * 2)
+        forEach { k, c -> m[k] = c }
+        return m
+    }
+}
+
+/** Python `text[:500]` 的 codepoint 语义截断（Kotlin String 按 UTF-16 单元索引）。
+ *  1.3.2（P1-2）提升为公共：入库路径对 title/content 复用同一截断语义。 */
+fun String.takeCodepoints(n: Int): String {
     if (n >= codePointCount(0, length)) return this
     val sb = StringBuilder()
     var count = 0

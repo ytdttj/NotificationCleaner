@@ -15,7 +15,7 @@ import java.io.File
 class SpamTunerTest {
 
     private fun base(): SpamModel = SpamModel.load(
-        File("src/main/assets/model/model.bin").inputStream(),
+        File("src/main/resources/model/model.bin").inputStream(),
     )
 
     private val adText = "【XX商城】限时秒杀！全场5折起，点击领取100元优惠券，仅剩2小时！"

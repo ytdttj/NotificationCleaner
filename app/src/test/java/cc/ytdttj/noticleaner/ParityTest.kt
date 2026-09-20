@@ -1,4 +1,4 @@
-﻿package cc.ytdttj.noticleaner
+package cc.ytdttj.noticleaner
 
 import cc.ytdttj.noticleaner.ai.SpamModel
 import kotlinx.serialization.Serializable
@@ -19,7 +19,7 @@ class ParityTest {
     private data class Row(val text: String, val score: Double)
 
     private fun model(): SpamModel =
-        SpamModel.load(File("src/main/assets/model/model.bin").inputStream())
+        SpamModel.load(File("src/main/resources/model/model.bin").inputStream())
 
     private fun parityRows(): List<Row> {
         val f = File("src/test/resources/parity.json")

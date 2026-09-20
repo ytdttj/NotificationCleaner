@@ -9,6 +9,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import cc.ytdttj.noticleaner.ServiceLocator
 import cc.ytdttj.noticleaner.ai.SpamModel
+import cc.ytdttj.noticleaner.ai.takeCodepoints
 import cc.ytdttj.noticleaner.data.ModelRepository
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_RULE
@@ -115,6 +116,20 @@ class CleanerListenerService : NotificationListenerService() {
                 }
                 appScope!!.launch {
                     ServiceLocator.settings.interceptMode.collect { cachedIntercept = it }
+                }
+                // 1.3.2（P0-5）：应用名缓存预热——distinctApps 一次查询回填，
+                // 决策路径对已见过的包名不再做 PackageManager IPC
+                appScope!!.launch(Dispatchers.IO) {
+                    runCatching {
+                        ServiceLocator.db.notificationDao().distinctApps()
+                            .groupBy { it.packageName }
+                            .forEach { (pkg, refs) ->
+                                // 同包多行时优先取已解析的 appName（appName != pkg 的行）
+                                val best = refs.firstOrNull { it.appName != it.packageName }?.appName
+                                    ?: refs.first().appName
+                                appNameCache.putIfAbsent(pkg, best)
+                            }
+                    }
                 }
                 // island 分支：超级岛设置热路径缓存（islandplan.md §三）
                 appScope!!.launch {
@@ -223,13 +238,21 @@ class CleanerListenerService : NotificationListenerService() {
     /** 实时回调与重连补扫共用入口；fromBackfill 决定走慢速补扫通道（1.2.1） */
     private fun dispatch(sbn: StatusBarNotification, fromBackfill: Boolean) {
         if (sbn.packageName == SELF_PACKAGE) return
-        android.util.Log.i("NCWatch", "posted pkg=${sbn.packageName} connected=$listenerConnected backfill=$fromBackfill")
+        // 1.3.2（P3-2）：每通知一次的日志在 release 下门控，省 logd 写入与字符串分配
+        if (cc.ytdttj.noticleaner.BuildConfig.DEBUG) {
+            android.util.Log.i("NCWatch", "posted pkg=${sbn.packageName} connected=$listenerConnected backfill=$fromBackfill")
+        }
         val notification: Notification = sbn.notification ?: return
         if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val extras = notification.extras
+        // 1.3.2（P1-2）：入库正文截断 500 codepoint——阻止 DB/复合索引膨胀与去重长串比较；
+        // 截断后 joined 的前 500 codepoint 不变，AI 打分逐位不变（论证见 1.3.2Plan P1-2）
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+            .takeCodepoints(cc.ytdttj.noticleaner.ai.FeatureHasher.MAX_TEXT_LEN)
         val content = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+            .takeCodepoints(cc.ytdttj.noticleaner.ai.FeatureHasher.MAX_TEXT_LEN)
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()
+            .takeCodepoints(cc.ytdttj.noticleaner.ai.FeatureHasher.MAX_TEXT_LEN)
         val text = listOf(content, bigText).filter { it.isNotEmpty() }
             .distinct().joinToString(" ").ifEmpty { content }
         if (title.isEmpty() && text.isEmpty()) return
@@ -263,7 +286,21 @@ class CleanerListenerService : NotificationListenerService() {
 
         // 模拟来源解析（island 分支测试）：Shell 通知 tag island:<pkg> → 按模拟包名入库/打分/上岛
         val pkg = cc.ytdttj.noticleaner.notify.island.IslandNotifier.effectivePackage(sbn)
-        val appName = appNameCache.getOrPut(pkg) { appLabel(pkg) }
+        // 1.3.2（P0-5）：应用名解析移出决策路径——缓存命中直接用；未命中先用包名占位
+        //（putIfAbsent 保证单飞），异步解析后回填缓存与历史行，不占用实时槽做 IPC
+        val appName = appNameCache[pkg] ?: run {
+            appNameCache.putIfAbsent(pkg, pkg)
+            appScope?.launch(Dispatchers.IO) {
+                val label = appLabel(pkg)
+                appNameCache[pkg] = label
+                // 解析失败时 label == pkg（兜底值，维持占位语义，与 appLabel KDoc 1.2.3 取舍一致）；
+                // 此时跳过 DB 回填，避免空转 UPDATE（P0-5 修订4）
+                if (label != pkg) {
+                    runCatching { locator.db.notificationDao().updateAppName(pkg, label) }
+                }
+            }
+            pkg
+        }
         val notification = sbn.notification
         val channel = notification?.channelId.orEmpty()
         // 渠道名展示层解析：详情页展示渠道 ID（Plan.md §6.1）
@@ -298,8 +335,10 @@ class CleanerListenerService : NotificationListenerService() {
                     whitelisted -> decision = DECISION_WHITELIST // 跳过 AI 过滤（规则仍生效，见上）
                     else -> {
                         val normalized = cc.ytdttj.noticleaner.ai.FeatureHasher.normalize(joined)
+                        // 1.3.2（P1-3）：硬放行改判已归一化文本（零额外分配，省 6 次 locale 敏感扫描）。
+                        // 与模块端（FilterEngine.decide）同步修改；语义扩大（分隔符变体命中）有意为之
                         val hardAllow = normalized.length < 4 ||
-                            FilterGuards.HARD_ALLOW_WORDS.any { joined.contains(it, ignoreCase = true) }
+                            FilterGuards.HARD_ALLOW_WORDS_NORMALIZED.any { normalized.contains(it) }
                         if (!hardAllow) {
                             // 模型不可用（assets 缺失/损坏）时跳过打分，按放行处理
                             // 1.1.11：带通道偏置打分（同 App 同渠道的学习成果直接生效）
@@ -348,44 +387,26 @@ class CleanerListenerService : NotificationListenerService() {
             }
         }
 
-        // ---- 入库（1.1.6：按槽位 key 去重 + 互斥，防并发双插）----
+        // ---- 入库（1.3.2 P1-1：findByKey/update/去重/insert 合并为单事务，fsync 3→1；
+        //      与 ModuleLogProvider 回流路径共用 upsertSlot；insertMutex 保留用于跨协程互斥）----
+        val entity = NotificationEntity(
+            packageName = pkg,
+            appName = appName,
+            channelId = channel,
+            channelName = channel,
+            title = title,
+            content = content,
+            postTime = postTime,
+            adProbability = probability,
+            decision = decision,
+            expireAt = postTime + EXPIRE_MS,
+            key = sbn.key,
+        )
         insertMutex.withLock {
-            // 同一通知槽位（sbn.key）= 通知栏同一条通知：内容更新就地覆盖，不拆新行
-            val existing = dao.findByKey(sbn.key)
-            if (existing != null) {
-                dao.update(
-                    existing.copy(
-                        title = title,
-                        content = content,
-                        postTime = postTime,
-                        adProbability = probability,
-                        decision = decision,
-                        expireAt = postTime + EXPIRE_MS,
-                    ),
-                )
-                countFiltered(decision, existing.decision)
-                return
+            val outcome = dao.upsertSlot(entity, postTime - DEDUP_WINDOW_MS)
+            if (outcome != null) {
+                countFiltered(decision, outcome.previousDecision)
             }
-            // 60 秒内同 App + 同标题 + 同内容、不同槽位的重复推送：不再重复入库
-            val dup = dao.findRecentDuplicate(pkg, title, content, postTime - DEDUP_WINDOW_MS)
-            if (dup != null) return
-
-            dao.insert(
-                NotificationEntity(
-                    packageName = pkg,
-                    appName = appName,
-                    channelId = channel,
-                    channelName = channel,
-                    title = title,
-                    content = content,
-                    postTime = postTime,
-                    adProbability = probability,
-                    decision = decision,
-                    expireAt = postTime + EXPIRE_MS,
-                    key = sbn.key,
-                ),
-            )
-            countFiltered(decision, null)
         }
     }
 

@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -20,9 +21,9 @@ import java.net.URL
 
 /**
  * 应用内更新（UpgradePlan.md）：
- * 检查顺序 Gitee → GitHub（1.1.10 起 Gitee 优先，国内可达性更好；首个成功的 latest.json 生效）；
- * 下载顺序 Gitee → GitHub（应用内直连，1.1.9 起不再用系统 DownloadManager——
- * 其 UA/网络栈在部分 ROM 上会被 CDN 拦截或污染导致 sha256 校验失败）。
+ * 1.3.2 更新分流：稳定版 → Gitee（x.x.x 正式 Release）；Dev 版 → GitHub（x.x.x Dev N）。
+ * 检查按所选通道单源获取（不再双源排序）；下载优先同一镜像，稳定版另一镜像作备选
+ * （Dev 版仅 GitHub 有资产，不做备选）。
  * 注：latest.json 的 url 字段仅保留给旧版本客户端兜底，1.1.10+ 的候选地址由本端按镜像自行构造。
  * latest.json: {versionCode, versionName, notes, url?, sha256?}
  */
@@ -49,17 +50,39 @@ class UpdateViewModel : ViewModel() {
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state
 
+    /** 更新通道（1.3.2）：默认稳定版；持久化于 DataStore（SettingsRepository） */
+    private val _channel = MutableStateFlow(UpdateChannel.STABLE)
+    val channel: StateFlow<UpdateChannel> = _channel
+
     private var downloadJob: Job? = null
 
     /** 上次检查成功的来源（gitee/github），下载优先使用同一镜像（1.1.10） */
     @Volatile
     private var lastCheckSource: String = "gitee"
 
+    init {
+        viewModelScope.launch {
+            val saved = runCatching {
+                cc.ytdttj.noticleaner.ServiceLocator.settings.updateChannel.first()
+            }.getOrNull()
+            _channel.value = runCatching { UpdateChannel.valueOf(saved ?: "STABLE") }
+                .getOrDefault(UpdateChannel.STABLE)
+        }
+    }
+
+    /** 切换更新通道：立即生效并持久化 */
+    fun setChannel(c: UpdateChannel) {
+        _channel.value = c
+        viewModelScope.launch {
+            runCatching { cc.ytdttj.noticleaner.ServiceLocator.settings.setUpdateChannel(c.name) }
+        }
+    }
+
     fun reset() {
         _state.value = UpdateState.Idle
     }
 
-    /** 检查更新（Gitee 优先；检查逻辑在 [UpdateChecker]，与后台 Worker 共用）。
+    /** 检查更新（按所选通道单源获取；检查逻辑在 [UpdateChecker]，与后台 Worker 共用）。
      *  island 分支：包名非正式版时短路——latest.json 通道只指正式版（island 版与正式版并存，装正式版 APK 不会升级而是多装一个） */
     fun checkUpdate() {
         if (BuildConfig.APPLICATION_ID != "cc.ytdttj.noticleaner") {
@@ -69,10 +92,11 @@ class UpdateViewModel : ViewModel() {
         if (_state.value is UpdateState.Checking) return
         downloadJob?.cancel()
         _state.value = UpdateState.Checking
+        val ch = _channel.value
         viewModelScope.launch {
-            val result = UpdateChecker.checkLatest()
+            val result = UpdateChecker.checkLatest(ch)
             _state.value = when {
-                result == null -> UpdateState.Error("检查失败：无法访问 GitHub 与 Gitee")
+                result == null -> UpdateState.Error("检查失败：无法访问${if (ch == UpdateChannel.STABLE) " Gitee" else " GitHub"} 更新源")
                 result.release.versionCode > BuildConfig.VERSION_CODE -> {
                     lastCheckSource = result.source
                     UpdateState.Available(result.release)
@@ -82,17 +106,23 @@ class UpdateViewModel : ViewModel() {
         }
     }
 
-    /** 下载 APK：优先使用检查成功时的同一镜像（模板化 URL），另一镜像作备选 */
+    /** 下载 APK：稳定版优先检查成功的镜像、另一镜像备选；Dev 版仅 GitHub（模板化 URL） */
     fun startDownload(release: LatestRelease) {
         downloadJob?.cancel()
         val appCtx = cc.ytdttj.noticleaner.ServiceLocator.appContext
-        val apkName = "NotiCleaner-${release.versionName}.apk"
-        val giteeUrl = BuildConfig.UPDATE_APK_GITEE + "/v" + release.versionName + "/" + apkName
-        val githubUrl = BuildConfig.UPDATE_APK_GITHUB + "/v" + release.versionName + "/" + apkName
-        val candidates = if (lastCheckSource == "gitee") {
-            listOf("Gitee" to giteeUrl, "GitHub" to githubUrl)
-        } else {
-            listOf("GitHub" to githubUrl, "Gitee" to giteeUrl)
+        // 版本号去空格作为 tag/文件名（Dev 版 "1.3.2 Dev 1" → "1.3.2Dev1"，git tag 与附件名不允许空格）
+        val tag = "v" + release.versionName.replace(" ", "")
+        val apkName = "NotiCleaner-${release.versionName.replace(" ", "")}.apk"
+        val giteeUrl = BuildConfig.UPDATE_APK_GITEE + "/" + tag + "/" + apkName
+        val githubUrl = BuildConfig.UPDATE_APK_GITHUB + "/" + tag + "/" + apkName
+        val candidates = when (_channel.value) {
+            UpdateChannel.DEV -> listOf("GitHub" to githubUrl)
+            UpdateChannel.STABLE ->
+                if (lastCheckSource == "gitee") {
+                    listOf("Gitee" to giteeUrl, "GitHub" to githubUrl)
+                } else {
+                    listOf("GitHub" to githubUrl, "Gitee" to giteeUrl)
+                }
         }
         _state.value = UpdateState.Downloading(release, 0)
         downloadJob = viewModelScope.launch {

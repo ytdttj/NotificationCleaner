@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Rule
+import androidx.compose.material.icons.automirrored.filled.List
+// 1.3.2（P3-7①）：material-icons-extended → core（History/Rule 为 extended 独有，
+// 就近替换为 core 内语义相近图标，debug DEX 体积显著缩小）
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -183,8 +185,8 @@ class MainActivity : ComponentActivity() {
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 private val tabs = listOf(
-    Tab("history", "历史", Icons.Filled.History),
-    Tab("rules", "规则", Icons.Filled.Rule),
+    Tab("history", "历史", Icons.Filled.DateRange),
+    Tab("rules", "规则", Icons.AutoMirrored.Filled.List),
     Tab("settings", "设置", Icons.Filled.Settings),
 )
 

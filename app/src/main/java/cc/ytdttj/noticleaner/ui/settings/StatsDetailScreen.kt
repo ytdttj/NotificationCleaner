@@ -41,11 +41,15 @@ import cc.ytdttj.noticleaner.data.db.NotificationDao
 import cc.ytdttj.noticleaner.data.db.NotificationEntity
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
-private val detailTimeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+// 1.3.2（P3-6）：SimpleDateFormat（非线程安全）→ java.time DateTimeFormatter（不可变）
+private val detailTimeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+private fun formatDetailTime(epochMs: Long): String =
+    detailTimeFmt.format(Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()))
 
 sealed class StatsMode(val key: String) {
     data object Filtered : StatsMode("filtered")
@@ -114,7 +118,7 @@ fun StatsDetailScreen(
                             Row {
                                 Text(n.appName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(8.dp))
-                                Text(detailTimeFmt.format(Date(n.postTime)), style = MaterialTheme.typography.labelSmall)
+                                Text(formatDetailTime(n.postTime), style = MaterialTheme.typography.labelSmall)
                                 Spacer(Modifier.weight(1f))
                                 val reason = when (n.decision) {
                                     "FILTERED_BY_AI", "FILTERED_BY_AI_MODULE" -> "AI ${(n.adProbability * 100).toInt()}%"

@@ -17,6 +17,11 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
     override fun onCreate() {
         super.onCreate()
         ServiceLocator.init(this)
+        // 1.3.2（P1-4）：启动预热——模型（base+delta）与 Room 首连在 IO 线程提前加载，
+        // 冷启动后首条通知的处理不再被 ~10-15ms 模型加载尖峰占住实时槽
+        ServiceLocator.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { ServiceLocator.modelRepo.get() }
+        }
         // LSPosed 框架服务（模块激活时由框架绑定）：模块激活状态 + delta 远程文件通道
         runCatching { XposedServiceHelper.registerListener(this) }
         // 模块拦截记录回流：system_server 在 APP 未运行时缓冲，启动即请求刷出

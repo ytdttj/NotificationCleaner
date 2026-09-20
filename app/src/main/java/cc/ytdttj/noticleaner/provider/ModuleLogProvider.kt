@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Binder
 import android.os.Process
 import cc.ytdttj.noticleaner.ServiceLocator
+import cc.ytdttj.noticleaner.ai.takeCodepoints
 import cc.ytdttj.noticleaner.data.db.NotificationEntity
 import kotlinx.coroutines.runBlocking
 
@@ -32,8 +33,11 @@ class ModuleLogProvider : ContentProvider() {
             appName = appName(ctx, values.getAsString(COL_PACKAGE).orEmpty()),
             channelId = values.getAsString(COL_CHANNEL).orEmpty(),
             channelName = values.getAsString(COL_CHANNEL).orEmpty(),
-            title = values.getAsString(COL_TITLE).orEmpty(),
-            content = values.getAsString(COL_CONTENT).orEmpty(),
+            // 1.3.2（P1-2）：与 NLS 入库路径同语义截断 500 codepoint（跨路径去重需两端一致）
+            title = values.getAsString(COL_TITLE).orEmpty()
+                .takeCodepoints(cc.ytdttj.noticleaner.ai.FeatureHasher.MAX_TEXT_LEN),
+            content = values.getAsString(COL_CONTENT).orEmpty()
+                .takeCodepoints(cc.ytdttj.noticleaner.ai.FeatureHasher.MAX_TEXT_LEN),
             postTime = values.getAsLong(COL_POST_TIME) ?: System.currentTimeMillis(),
             adProbability = values.getAsFloat(COL_PROBABILITY) ?: 0f,
             decision = values.getAsString(COL_DECISION).orEmpty(),
@@ -44,20 +48,13 @@ class ModuleLogProvider : ContentProvider() {
 
         runBlocking {
             val dao = ServiceLocator.db.notificationDao()
-            val existing = dao.findByKey(entity.key)
-            if (existing != null) {
-                dao.update(existing.copy(decision = entity.decision, adProbability = entity.adProbability))
-            } else {
-                val dup = dao.findRecentDuplicate(
-                    entity.packageName, entity.title, entity.content, entity.postTime - DEDUP_MS,
-                )
-                if (dup == null) {
-                    dao.insert(entity)
-                    // 模块拦截也计入常驻通知统计（与 NLS 路径一致）
-                    when (entity.decision) {
-                        "FILTERED_BY_AI_MODULE" -> ServiceLocator.settings.incrementFiltered(ai = true)
-                        "FILTERED_BY_RULE_MODULE" -> ServiceLocator.settings.incrementFiltered(ai = false)
-                    }
+            // 1.3.2（P1-1）：与 NLS 路径共用单事务槽位写入（原三趟独立事务 + 无锁 → 单事务）
+            val outcome = dao.upsertSlot(entity, entity.postTime - DEDUP_MS)
+            if (outcome?.inserted == true) {
+                // 模块拦截也计入常驻通知统计（与 NLS 路径一致；仅新插入计数）
+                when (entity.decision) {
+                    "FILTERED_BY_AI_MODULE" -> ServiceLocator.settings.incrementFiltered(ai = true)
+                    "FILTERED_BY_RULE_MODULE" -> ServiceLocator.settings.incrementFiltered(ai = false)
                 }
             }
         }

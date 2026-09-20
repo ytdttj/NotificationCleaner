@@ -56,13 +56,13 @@ class SpamModel(
     }
 
     /** 通道偏置 + 文本特征打分（通道权重不计入 L2 归一化，避免被稀释） */
-    private fun scoreWithChannel(counts: Map<Int, Int>, channelWeight: Double): Double {
+    private fun scoreWithChannel(counts: FeatureCounts, channelWeight: Double): Double {
         var z = bias + channelWeight
-        if (counts.isEmpty()) return sigmoid(z)
+        if (counts.size == 0) return sigmoid(z)
         var normSq = 0.0
-        for (c in counts.values) normSq += c.toDouble() * c.toDouble()
+        counts.forEach { _, c -> normSq += c.toDouble() * c.toDouble() }
         val norm = kotlin.math.sqrt(normSq)
-        for ((k, c) in counts) {
+        counts.forEach { k, c ->
             z += weights[k].toDouble() * (c.toDouble() / norm)
         }
         return sigmoid(z)
@@ -111,13 +111,13 @@ class SpamModel(
             scoreWithCounts(weights, bias, FeatureHasher.counts(rawText))
 
         /** 计数向量打分核心（Double 累加顺序与 Python 参考实现一致） */
-        private fun scoreWithCounts(weights: FloatArray, bias: Double, counts: Map<Int, Int>): Double {
-            if (counts.isEmpty()) return sigmoid(bias)
+        private fun scoreWithCounts(weights: FloatArray, bias: Double, counts: FeatureCounts): Double {
+            if (counts.size == 0) return sigmoid(bias)
             var normSq = 0.0
-            for (c in counts.values) normSq += c.toDouble() * c.toDouble()
+            counts.forEach { _, c -> normSq += c.toDouble() * c.toDouble() }
             val norm = kotlin.math.sqrt(normSq)
             var z = bias
-            for ((k, c) in counts) {
+            counts.forEach { k, c ->
                 z += weights[k].toDouble() * (c.toDouble() / norm)
             }
             return sigmoid(z)

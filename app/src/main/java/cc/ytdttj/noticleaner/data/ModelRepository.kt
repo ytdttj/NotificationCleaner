@@ -46,9 +46,9 @@ class ModelRepository(private val context: Context) {
     @Volatile
     private var modelEpoch = 0L
 
-    /** 打分结果 LRU（P1-3：同文本重复推送免重复推理；64 条上限，键含文本，内存约几十 KB） */
-    private val scoreCache = object : LinkedHashMap<String, Double>(SCORE_CACHE_MAX, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Double>): Boolean =
+    /** 打分结果 LRU（P1-3：同文本重复推送免重复推理；64 条上限；P3-5：64 位哈希键，零字符串拼接） */
+    private val scoreCache = object : LinkedHashMap<Long, Double>(SCORE_CACHE_MAX, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Double>): Boolean =
             size > SCORE_CACHE_MAX
     }
 
@@ -67,8 +67,6 @@ class ModelRepository(private val context: Context) {
         }
     }
 
-    fun getBlocking(): SpamModel? = kotlinx.coroutines.runBlocking { get() }
-
     /**
      * 打分（1.2.0，ImprovePlan P1-2/P1-3）：复用调用方已 normalize 的文本，
      * 结果带 LRU 缓存（键含模型代数，模型更新后自动失效）。
@@ -76,11 +74,36 @@ class ModelRepository(private val context: Context) {
      */
     suspend fun scoreCached(pkg: String, normalizedText: String, channelKey: Int?): Double? {
         val model = get() ?: return null
-        val key = "$modelEpoch\u0000$pkg\u0000$normalizedText\u0000${channelKey ?: 0}"
+        val key = cacheKey(pkg, normalizedText, channelKey)
         synchronized(scoreCache) { scoreCache[key] }?.let { return it }
         val p = model.scoreNormalized(normalizedText, channelKey)
         synchronized(scoreCache) { scoreCache[key] = p }
         return p
+    }
+
+    /**
+     * P3-5：缓存键 = 模型代数 + pkg + 文本 + 渠道的 64 位 FNV-1a 组合（零字符串分配）。
+     * pkg/channelKey 必须与文本一起进哈希，否则不同 App/渠道的同文本通知互相命中
+     * （渠道偏置判错）。碰撞概率 ~2^-64 可忽略，属正确性取舍（代码级取舍已在此注明）。
+     */
+    private fun cacheKey(pkg: String, normalizedText: String, channelKey: Int?): Long {
+        var h = modelEpoch xor -3750763034362895579L // FNV-1a 64 offset basis
+        val prime = 0x100000001B3L
+        for (c in pkg) {
+            h = h xor c.code.toLong()
+            h *= prime
+        }
+        h = h xor 0x1FL
+        h *= prime
+        for (c in normalizedText) {
+            h = h xor c.code.toLong()
+            h *= prime
+        }
+        h = h xor 0x1FL
+        h *= prime
+        h = h xor (channelKey ?: 0).toLong()
+        h *= prime
+        return h
     }
 
     /** effective 更新统一走此函数（同步刷新打分缓存代数） */
@@ -131,11 +154,20 @@ class ModelRepository(private val context: Context) {
         return deltaFile.inputStream().use { SpamDelta.decode(it) }
     }
 
-    private fun loadBase(): SpamModel? = runCatching {
-        base ?: context.assets.open("model/model.bin").use { SpamModel.load(it) }.also { base = it }
-    }.onFailure {
-        android.util.Log.e("ModelRepository", "内置模型加载失败", it)
-    }.getOrNull()
+    /**
+     * 1.3.2（P1-4）：模型加载挪 IO 线程——冷启动首条通知不再让实时槽等待 0.5MB 读取 + CRC32。
+     * 1.3.2（P3-7②）：model.bin 单通道打包（src/main/resources），APP 端与模块端统一走 classLoader。
+     */
+    private suspend fun loadBase(): SpamModel? = withContext(Dispatchers.IO) {
+        runCatching {
+            base ?: SpamModel::class.java.classLoader
+                ?.getResourceAsStream("model/model.bin")
+                ?.use { SpamModel.load(it) }
+                ?.also { base = it }
+        }.onFailure {
+            android.util.Log.e("ModelRepository", "内置模型加载失败", it)
+        }.getOrNull()
+    }
 
     companion object {
         /** 打分 LRU 上限（ImprovePlan P1-3） */

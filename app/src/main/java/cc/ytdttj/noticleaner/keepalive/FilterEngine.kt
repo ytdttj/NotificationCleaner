@@ -44,6 +44,11 @@ internal class FilterEngine {
     @Volatile private var model: SpamModel? = null
     @Volatile private var loadedDeltaVersion = Long.MIN_VALUE
 
+    // P0-2：MIUI extraNotification 反射缓存（探测一次，成功缓存 Field/Method，失败永久短路）
+    @Volatile private var extraField: java.lang.reflect.Field? = null
+    @Volatile private var targetPkgGetter: java.lang.reflect.Method? = null
+    @Volatile private var resolveProbed = false
+
     /** 预编译规则快照（config.rules 变化时重建） */
     @Volatile private var compiledRules: List<CompiledModuleRule> = emptyList()
 
@@ -97,7 +102,7 @@ internal class FilterEngine {
         val aiText = listOf(title, joined).filter { it.isNotEmpty() }.joinToString("\n")
         val normalized = FeatureHasher.normalize(aiText)
         if (normalized.length < 4 ||
-            FilterGuards.HARD_ALLOW_WORDS.any { aiText.contains(it, ignoreCase = true) }
+            FilterGuards.HARD_ALLOW_WORDS_NORMALIZED.any { normalized.contains(it) }
         ) {
             return null
         }
@@ -151,49 +156,82 @@ internal class FilterEngine {
         }
     }
 
-    /** delta 版本变化才重载模型；base 经模块 APK classpath 读取（assets 目录同时打包为 resources） */
+    /**
+     * delta 版本变化才重载模型；base 经模块 APK classpath 读取（P0-3：base 只加载一次，
+     * 缓存于 companion；重建在单线程 Executor 上异步执行，`model` @Volatile 原子换引用，
+     * 重建期间旧模型继续可用，语义为"延迟生效"）。
+     */
     private fun refreshModel(api: io.github.libxposed.api.XposedInterface?) {
         val version = config.deltaVersion
         if (version == loadedDeltaVersion && model != null) return
+        rebuildExecutor.execute {
+            runCatching {
+                if (version == loadedDeltaVersion && model != null) return@runCatching
+                val base = loadBaseModel()
+                var next = base
+                if (base != null && version != 0L && api != null) {
+                    runCatching {
+                        api.openRemoteFile(ModuleConfigCodec.DELTA_REMOTE_FILE)?.use { pfd ->
+                            val delta = SpamDelta.decode(android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd))
+                            if (!delta.isEmpty) {
+                                next = base.withDelta(delta)
+                                android.util.Log.i("NCWatch", "module delta v$version loaded: ${delta.indices.size} weights")
+                            }
+                        }
+                    }.onFailure { android.util.Log.w("NCWatch", "module delta load failed: $it") }
+                }
+                model = next
+                loadedDeltaVersion = version
+            }.onFailure { android.util.Log.w("NCWatch", "module model rebuild failed: $it") }
+        }
+    }
+
+    /** base 模型只加载一次；加载失败置负极标记，避免每次学习事件都重试 0.5MB IO。 */
+    private fun loadBaseModel(): SpamModel? {
+        cachedBase?.let { return it }
+        if (baseLoadFailed) return null
         val base = runCatching {
             SpamModel::class.java.classLoader
                 ?.getResourceAsStream(MODEL_RESOURCE)?.use { SpamModel.load(it) }
         }.onFailure {
             android.util.Log.w("NCWatch", "module base model load failed: $it")
         }.getOrNull()
-        if (base == null) {
-            model = null
-            loadedDeltaVersion = version
-            return
-        }
-        var next = base
-        if (version != 0L && api != null) {
-            runCatching {
-                api.openRemoteFile(ModuleConfigCodec.DELTA_REMOTE_FILE)?.use { pfd ->
-                    val delta = SpamDelta.decode(android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd))
-                    if (!delta.isEmpty) {
-                        next = base.withDelta(delta)
-                        android.util.Log.i("NCWatch", "module delta v$version loaded: ${delta.indices.size} weights")
-                    }
-                }
-            }.onFailure { android.util.Log.w("NCWatch", "module delta load failed: $it") }
-        }
-        model = next
-        loadedDeltaVersion = version
+        if (base == null) baseLoadFailed = true else cachedBase = base
+        return base
     }
 
     /** MIUI：通知可能由系统框架代发，extraNotification.targetPkg 才是真实包名（借鉴 ref/Notice Xiaomi.kt） */
     private fun resolvePackage(pkg: String, notification: Notification): String {
-        runCatching {
-            val extra = notification.javaClass.getField("extraNotification").get(notification)
-            if (extra != null) {
-                val target = extra.javaClass.methods
-                    .firstOrNull { it.name == "getTargetPkg" && it.parameterCount == 0 }
-                    ?.invoke(extra) as? String
-                if (!target.isNullOrBlank()) return target
-            }
+        // P0-2：反射结果缓存（system_server 内 Notification 类唯一，缓存安全）。
+        // 慢路径（字段/方法查找）只发生在第一条通知；此后每条仅 2 次反射调用。
+        val field = extraField
+        val getter = targetPkgGetter
+        if (field != null && getter != null) {
+            val target = runCatching {
+                val extra = field.get(notification)
+                if (extra != null) getter.invoke(extra) as? String else null
+            }.getOrNull()
+            return if (!target.isNullOrBlank()) target else pkg
         }
-        return pkg
+        if (resolveProbed) return pkg // 探测失败（非 MIUI）→ 永久短路
+        return runCatching {
+            val f = notification.javaClass.getField("extraNotification")
+            val m = f.type.methods
+                .firstOrNull { it.name == "getTargetPkg" && it.parameterCount == 0 }
+            if (m == null) {
+                resolveProbed = true
+                return pkg
+            }
+            val extra = f.get(notification)
+            val target = if (extra != null) m.invoke(extra) as? String else null
+            // 探测成功即缓存（与 target 本次是否非空无关，extra 可能后续才有值）
+            extraField = f
+            targetPkgGetter = m
+            if (!target.isNullOrBlank()) target else pkg
+        }.getOrElse {
+            resolveProbed = true
+            pkg
+        }
     }
 
     fun isWhitelisted(pkg: String): Boolean = pkg in config.whitelist
@@ -201,5 +239,14 @@ internal class FilterEngine {
     companion object {
         private const val SELF_PKG = "cc.ytdttj.noticleaner"
         private const val MODEL_RESOURCE = "model/model.bin"
+
+        // P0-3：base 模型进程级缓存（system_server 内 class/model 唯一，缓存安全）
+        @Volatile private var cachedBase: SpamModel? = null
+        @Volatile private var baseLoadFailed = false
+    }
+
+    /** P0-3：模型重建专用单线程（串行化重建，避免与 decide() 的并发读互相干扰） */
+    private val rebuildExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "NCWatch-ModelRebuild").apply { isDaemon = true }
     }
 }

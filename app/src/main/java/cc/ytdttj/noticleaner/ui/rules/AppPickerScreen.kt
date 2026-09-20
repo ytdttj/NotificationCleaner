@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -40,6 +42,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cc.ytdttj.noticleaner.ui.history.AppIcon
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** 选择器会话结果（跨页面传递选中项；null = 未选择/取消） */
 object AppPickerSession {
@@ -58,19 +62,25 @@ fun AppPickerScreen(
     onConfirm: (List<Pair<String, String>>) -> Unit,
 ) {
     val context = LocalContext.current
-    val allApps = remember {
-        val pm = context.packageManager
-        runCatching {
-            // 1.2.3：不再按 launcher 过滤——系统应用（服务类无界面包）也可选；
-            // label 解析逐项容错（个别包 RRO 资源加载失败不影响整个列表）
-            pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                .map {
-                    val label = runCatching { pm.getApplicationLabel(it)?.toString() }
-                        .getOrNull() ?: it.packageName
-                    AppInfo(it.packageName, label)
-                }
-                .sortedBy { it.label.lowercase() }
-        }.getOrDefault(emptyList())
+    // 1.3.2（P0-4）：应用列表加载移出主线程——原 remember{} 在组合期同步做
+    // 200~400 次 PackageManager IPC，打开页面冻结 0.5~1.5s；现在先出加载态，数据到位后填充
+    var loaded by remember { mutableStateOf(false) }
+    val allApps by produceState<List<AppInfo>>(emptyList()) {
+        value = withContext(Dispatchers.IO) {
+            val pm = context.packageManager
+            runCatching {
+                // 1.2.3：不再按 launcher 过滤——系统应用（服务类无界面包）也可选；
+                // label 解析逐项容错（个别包 RRO 资源加载失败不影响整个列表）
+                pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                    .map {
+                        val label = runCatching { pm.getApplicationLabel(it)?.toString() }
+                            .getOrNull() ?: it.packageName
+                        AppInfo(it.packageName, label)
+                    }
+                    .sortedBy { it.label.lowercase() }
+            }.getOrDefault(emptyList())
+        }
+        loaded = true
     }
     var query by remember { mutableStateOf("") }
     var selected by remember {
@@ -107,7 +117,16 @@ fun AppPickerScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
             )
-            if (filtered.isEmpty()) {
+            if (!loaded) {
+                Column(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    CircularProgressIndicator()
+                    Text("正在加载应用列表…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 12.dp))
+                }
+            } else if (filtered.isEmpty()) {
                 Column(
                     Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.Center,

@@ -56,11 +56,15 @@ import cc.ytdttj.noticleaner.data.db.DECISION_ONGOING
 import cc.ytdttj.noticleaner.data.db.DECISION_WHITELIST
 import cc.ytdttj.noticleaner.data.db.NotificationEntity
 import cc.ytdttj.noticleaner.notify.KeepAliveManager
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
-private val timeFmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+// 1.3.2（P3-6）：SimpleDateFormat（非线程安全）→ java.time DateTimeFormatter（不可变）
+private val timeFmt = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+
+private fun formatTime(epochMs: Long): String =
+    timeFmt.format(Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()))
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -173,26 +177,31 @@ fun AppIcon(packageName: String, size: Int = 40, fallbackText: String = packageN
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     // 1.1.7：按屏幕密度生成物理像素位图，避免 40px 位图在 3x 屏上被拉伸导致模糊
     val sizePx = (size * density).toInt().coerceAtLeast(8)
-    val bmp = remember(packageName, sizePx) {
+    // 1.3.2（P3-1）：渲染挪 IO 线程——缓存/负缓存命中时同步返回；未命中先出占位圆底，
+    // 异步 getApplicationIcon + 绘制完成后重组替换，首次出现某包名不再阻塞组合
+    val bmp by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(
+        null, packageName, sizePx,
+    ) {
         val cacheKey = "$packageName:$sizePx"
-        iconCache.get(cacheKey) ?: run {
-            if (failedIconKey.get(packageName) == true) {
-                null // 已知失败包：不再重试系统资源加载，直接走占位
+        iconCache.get(cacheKey)?.let {
+            value = it
+            return@produceState
+        }
+        if (failedIconKey.get(packageName) == true) return@produceState // 已知失败包：直接占位
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val rendered = renderAppIcon(context, packageName, sizePx)
+            if (rendered != null) {
+                iconCache.put(cacheKey, rendered)
             } else {
-                val rendered = renderAppIcon(context, packageName, sizePx)
-                if (rendered != null) {
-                    iconCache.put(cacheKey, rendered)
-                    rendered
-                } else {
-                    failedIconKey.put(packageName, true)
-                    null
-                }
+                failedIconKey.put(packageName, true)
             }
+            rendered
         }
     }
-    if (bmp != null) {
+    val rendered = bmp
+    if (rendered != null) {
         androidx.compose.foundation.Image(
-            bitmap = bmp,
+            bitmap = rendered,
             contentDescription = null,
             modifier = Modifier.width(size.dp).height(size.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(size.dp / 4)),
         )
@@ -262,7 +271,7 @@ private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(n.appName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
-                    Text(timeFmt.format(Date(n.postTime)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text(formatTime(n.postTime), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                     Spacer(Modifier.weight(1f))
                     when (n.decision) {
                         DECISION_FILTERED_BY_AI, DECISION_FILTERED_BY_AI_MODULE ->
@@ -321,7 +330,7 @@ private fun NotificationDetail(
         Spacer(Modifier.height(8.dp))
         Text(n.content.ifEmpty { "（无正文）" }, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(12.dp))
-        Text("发送时间：${timeFmt.format(Date(n.postTime))}", style = MaterialTheme.typography.bodySmall)
+        Text("发送时间：${formatTime(n.postTime)}", style = MaterialTheme.typography.bodySmall)
         Text(
             // 1.2.3：label 解析失败时 appName 即包名，避免重复显示两次
             if (n.appName == n.packageName) "APP：${n.packageName}"

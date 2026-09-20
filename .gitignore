@@ -41,10 +41,7 @@ training/model_out/
 Thumbs.db
 
 # 开发计划
-Plan.md
-UpgradePlan.md
-island.md
-islandplan.md
-ImprovePlan.md
+*.md
 
 .trae/
+.workbuddy/

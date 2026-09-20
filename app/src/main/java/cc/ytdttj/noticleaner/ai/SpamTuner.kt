@@ -51,52 +51,63 @@ object SpamTuner {
         l2: Float = 0.005f,
     ): SpamDelta {
         // 重复学习的样本按 repeats 展开计入（1.1.11：同方向重复学习显著提升权重）
-        val prepared = samples.flatMap { s ->
-            val p = prepare(base, s) ?: return@flatMap emptyList()
-            List(p.repeats) { p }
-        }
+        // 1.3.2（P2-7a）：不再为每条样本分配 List(repeats)——内层 repeat 循环，迭代顺序与展开完全一致
+        val prepared = samples.mapNotNull { prepare(base, it) }
         if (prepared.isEmpty()) return SpamDelta.empty(base.buckets)
 
-        val delta = HashMap<Int, Float>()
+        // P2-7a：delta 用密集 FloatArray（1MB 临时，仅在用户点击学习时分配一次，学完释放），
+        // 千万级 HashMap 装箱读写 → 数组索引；桶数恰为 2 的幂，索引即 key
+        val delta = FloatArray(base.buckets)
         repeat(epochs) {
             for (s in prepared) {
-                var z = s.z0
-                for (i in s.keys.indices) z += (delta[s.keys[i]] ?: 0f) * s.x[i]
-                // 通道独立偏置（x=1，不参与 L2 归一化）：同 App 同渠道的推送性质高度一致
-                if (s.channelKey != 0) z += (delta[s.channelKey] ?: 0f)
-                val g = sigmoid(z) - s.y
-                for (i in s.keys.indices) {
-                    val k = s.keys[i]
-                    val current = delta[k] ?: 0f
-                    delta[k] = current - lr * (g * s.x[i] + l2 * current)
-                }
-                if (s.channelKey != 0) {
-                    val current = delta[s.channelKey] ?: 0f
-                    delta[s.channelKey] = current - lr * (g + l2 * current)
+                repeat(s.repeats) {
+                    var z = s.z0
+                    for (i in s.keys.indices) z += delta[s.keys[i]] * s.x[i]
+                    // 通道独立偏置（x=1，不参与 L2 归一化）：同 App 同渠道的推送性质高度一致
+                    if (s.channelKey != 0) z += delta[s.channelKey]
+                    val g = sigmoid(z) - s.y
+                    for (i in s.keys.indices) {
+                        val k = s.keys[i]
+                        val current = delta[k]
+                        delta[k] = current - lr * (g * s.x[i] + l2 * current)
+                    }
+                    if (s.channelKey != 0) {
+                        val current = delta[s.channelKey]
+                        delta[s.channelKey] = current - lr * (g + l2 * current)
+                    }
                 }
             }
         }
-        val keys = delta.keys.filter { delta[it] != 0f }.sorted()
-        return SpamDelta(
-            buckets = base.buckets,
-            indices = keys.toIntArray(),
-            values = FloatArray(keys.size) { delta[keys[it]]!! },
-        )
+        // 稀疏输出：仅非零桶；数组天然升序（与原 HashMap 键排序结果一致），逐位一致
+        var count = 0
+        for (v in delta) if (v != 0f) count++
+        val keys = IntArray(count)
+        val values = FloatArray(count)
+        var i = 0
+        for (idx in delta.indices) {
+            if (delta[idx] != 0f) {
+                keys[i] = idx
+                values[i] = delta[idx]
+                i++
+            }
+        }
+        return SpamDelta(buckets = base.buckets, indices = keys, values = values)
     }
 
     private fun prepare(base: SpamModel, sample: Sample): Prepared? {
-        // 归一化后过短的文本信号太少，不参与拟合（与 SpamJudge 护栏一致）
-        if (FeatureHasher.normalize(sample.text).length < MIN_LENGTH) return null
-        val counts = FeatureHasher.counts(sample.text)
-        if (counts.isEmpty()) return null
+        // 1.3.2（P2-3）：normalize 只做一次——长度校验与计数共用同一归一化结果
+        val n = FeatureHasher.normalize(sample.text)
+        if (n.length < MIN_LENGTH) return null
+        val counts = FeatureHasher.countsOfNormalized(n)
+        if (counts.size == 0) return null
         var sq = 0.0
-        for (c in counts.values) sq += c.toDouble() * c
+        counts.forEach { _, c -> sq += c.toDouble() * c }
         val norm = sqrt(sq).toFloat()
         val keys = IntArray(counts.size)
         val x = FloatArray(counts.size)
         var z0 = base.bias.toFloat()
         var i = 0
-        for ((k, c) in counts) {
+        counts.forEach { k, c ->
             keys[i] = k
             x[i] = (c / norm)
             z0 += base.weights[k] * x[i]

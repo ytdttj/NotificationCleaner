@@ -2,6 +2,7 @@ package cc.ytdttj.noticleaner.ui.history
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import cc.ytdttj.noticleaner.ServiceLocator
 import cc.ytdttj.noticleaner.ai.SpamTuner
 import cc.ytdttj.noticleaner.data.ModelRepository
@@ -17,6 +18,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -30,6 +35,7 @@ enum class HistoryFilter { ALL, FILTERED, PASSED }
  * 稀疏 delta（SpamTuner.fit，60 epoch）→ delta 独立落盘并叠加到生效模型。
  * base 权重永不被改写；删除标注后重新拟合即精确回滚；基线模型升级后自动重拟合。
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
 class HistoryViewModel(
     private val dao: NotificationDao,
     private val modelRepo: ModelRepository,
@@ -40,22 +46,35 @@ class HistoryViewModel(
     /** 历史搜索（匹配 App 名称/标题/内容，忽略大小写） */
     val search = MutableStateFlow("")
 
+    /**
+     * 历史列表（1.3.2 P2-5：筛选下推 SQL）——tab 切换用 flatMapLatest 选择对应查询，
+     * 每次 DB 变更只重查/重映当前 tab 的行（原来每条变更都重查 500 行再内存过滤）；
+     * 搜索 200ms 防抖；显式 flowOn + distinctUntilChanged。
+     * 收益边界：各 tab 仍受 LIMIT 500 约束（"已过滤"展示的是最新 500 条过滤项，非全部）。
+     */
     val list: StateFlow<List<NotificationEntity>> =
-        combine(dao.listAll(), filter, search) { all, f, q ->
-            val base = when (f) {
-                HistoryFilter.ALL -> all
-                HistoryFilter.FILTERED -> all.filter { it.decision in FILTERED_DECISIONS }
-                // "正常"= 未被过滤（含白名单/媒体/会话/常驻等保护型通知）
-                HistoryFilter.PASSED -> all.filter { it.decision !in FILTERED_DECISIONS }
-            }
-            if (q.isBlank()) base
-            else base.filter {
+        combine(
+            filter.flatMapLatest { f ->
+                when (f) {
+                    HistoryFilter.ALL -> dao.listAll()
+                    HistoryFilter.FILTERED -> dao.listByDecisions(FILTERED_DECISIONS.toList())
+                    // "正常"= 未被过滤（含白名单/媒体/会话/常驻等保护型通知）
+                    HistoryFilter.PASSED -> dao.listNotInDecisions(FILTERED_DECISIONS.toList())
+                }
+            },
+            search.debounce(200),
+        ) { rows, q ->
+            if (q.isBlank()) rows
+            else rows.filter {
                 it.appName.contains(q, true) ||
                     it.title.contains(q, true) ||
                     it.content.contains(q, true) ||
                     it.packageName.contains(q, true)
             }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _selected = MutableStateFlow<NotificationEntity?>(null)
     val selected: StateFlow<NotificationEntity?> = _selected
@@ -133,6 +152,9 @@ class HistoryViewModel(
      */
     private suspend fun refit(): List<NotificationEntity> {
         val labels = dao.listLearnedOnce()
+        if (labels.isNotEmpty()) {
+            _toast.value = "正在拟合 ${labels.size} 条标注…" // P2-4：长拟合进度反馈，防"假死"
+        }
         val samples = labels.map {
             SpamTuner.Sample(
                 text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n"),
@@ -151,18 +173,21 @@ class HistoryViewModel(
         modelRepo.setTunedFingerprint(modelRepo.baseFingerprint())
 
         // 用新模型刷新已学习行的概率展示（带通道偏置，与热路径决策一致）
+        // P2-4：逐行 update 改单事务批量写入（N 个事务 → 1 个）
         val effective = modelRepo.get() ?: return labels
-        val updated = labels.map {
-            val text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n")
-            val chKey = if (it.channelId.isNotEmpty()) {
-                cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(it.packageName, it.channelId)
-            } else {
-                null
+        val updated = ServiceLocator.db.withTransaction {
+            labels.map {
+                val text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n")
+                val chKey = if (it.channelId.isNotEmpty()) {
+                    cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(it.packageName, it.channelId)
+                } else {
+                    null
+                }
+                val p = effective.score(text, chKey).toFloat()
+                val row = it.copy(adProbability = p)
+                dao.update(row)
+                row
             }
-            val p = effective.score(text, chKey).toFloat()
-            val row = it.copy(adProbability = p)
-            dao.update(row)
-            row
         }
         _selected.value = _selected.value?.let { sel -> updated.firstOrNull { it.id == sel.id } ?: sel }
         return updated

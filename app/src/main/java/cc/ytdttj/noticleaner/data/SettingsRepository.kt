@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import cc.ytdttj.noticleaner.notify.island.IslandNotifier
@@ -36,29 +37,20 @@ class SettingsRepository(private val context: Context) {
 
     // ---- 1.2.0（ImprovePlan P2-2）：拦截计数内存累积 + 500ms 批量落盘 ----
     // 拦截风暴（一次弹 N 条广告）时不再逐条全文件读改写 DataStore。
-    // 常驻 ticker 只在有待写数据时 edit，进程被杀最多丢 500ms 窗口内的计数（仅展示用，可接受）。
+    // 1.3.2（P3-3）：常驻 ticker 改为按需启动的一次性 flush 协程——
+    // incrementFiltered 时才起协程（含 500ms 防抖窗口），写完且无新增即退出；
+    // 零拦截期间完全休眠，不再每秒唤醒 2 次。
     private val pendingAi = java.util.concurrent.atomic.AtomicInteger()
     private val pendingRule = java.util.concurrent.atomic.AtomicInteger()
 
     private val countFlushScope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
     )
+    private var flushJob: kotlinx.coroutines.Job? = null
 
     init {
-        countFlushScope.launch {
-            while (true) {
-                kotlinx.coroutines.delay(500)
-                val ai = pendingAi.getAndSet(0)
-                val rule = pendingRule.getAndSet(0)
-                if (ai == 0 && rule == 0) continue
-                runCatching {
-                    context.dataStore.edit {
-                        if (ai > 0) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + ai
-                        if (rule > 0) it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + rule
-                    }
-                }
-            }
-        }
+        // 冷启动时补一次 flush（进程被杀可能留下未落盘的增量；无增量时立即退出，零开销）
+        countFlushScope.launch { flushPendingCounters() }
     }
 
     val threshold: Flow<Float> = context.dataStore.data.map { it[keyThreshold] ?: 0.8f }
@@ -103,6 +95,16 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[keySimUnlocked] = value }
     }
 
+    // ---- 更新通道（1.3.2）：稳定版=Gitee / Dev 版=GitHub，默认稳定版 ----
+    private val keyUpdateChannel = stringPreferencesKey("update_channel")
+
+    /** 取值为 [cc.ytdttj.noticleaner.update.UpdateChannel] 的 name（"STABLE"/"DEV"） */
+    val updateChannel: Flow<String> = context.dataStore.data.map { it[keyUpdateChannel] ?: "STABLE" }
+
+    suspend fun setUpdateChannel(value: String) {
+        context.dataStore.edit { it[keyUpdateChannel] = value }
+    }
+
     suspend fun setThreshold(value: Float) {
         val clamped = value.coerceIn(0.5f, 1.0f)
         context.dataStore.edit { it[keyThreshold] = clamped }
@@ -120,8 +122,29 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[keyOnboardingDone] = true }
     }
 
-    /** 累计拦截计数：先入内存累积器，由后台 ticker 每 500ms 批量落盘（P2-2 防抖） */
+    /** 累计拦截计数：先入内存累积器，有待写数据时按需启动一次性 flush 协程批量落盘（P2-2 防抖 / P3-3 按需） */
     fun incrementFiltered(ai: Boolean) {
         (if (ai) pendingAi else pendingRule).incrementAndGet()
+        synchronized(this) {
+            if (flushJob?.isActive != true) {
+                flushJob = countFlushScope.launch { flushPendingCounters() }
+            }
+        }
+    }
+
+    /** 一次性 flush：防抖 500ms → 落盘 → 若落盘期间又有新增则继续，无新增即退出（协程结束，零唤醒） */
+    private suspend fun flushPendingCounters() {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            val ai = pendingAi.getAndSet(0)
+            val rule = pendingRule.getAndSet(0)
+            if (ai == 0 && rule == 0) return
+            runCatching {
+                context.dataStore.edit {
+                    if (ai > 0) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + ai
+                    if (rule > 0) it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + rule
+                }
+            }
+        }
     }
 }

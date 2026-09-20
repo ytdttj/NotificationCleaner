@@ -15,7 +15,7 @@ import java.io.File
 class ScoreNormalizedParityTest {
 
     private fun model(): SpamModel =
-        SpamModel.load(File("src/main/assets/model/model.bin").inputStream())
+        SpamModel.load(File("src/main/resources/model/model.bin").inputStream())
 
     private val samples = listOf(
         "",
@@ -65,8 +65,8 @@ class ScoreNormalizedParityTest {
     @Test
     fun countsOfNormalizedMatchesCounts() {
         for (raw in samples) {
-            val expected = FeatureHasher.counts(raw)
-            val actual = FeatureHasher.countsOfNormalized(FeatureHasher.normalize(raw))
+            val expected = FeatureHasher.counts(raw).asMap()
+            val actual = FeatureHasher.countsOfNormalized(FeatureHasher.normalize(raw)).asMap()
             assertEquals(
                 "counts mismatch for: ${raw.take(30)}",
                 expected,

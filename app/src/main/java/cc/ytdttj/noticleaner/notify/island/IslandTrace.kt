@@ -1,9 +1,7 @@
 package cc.ytdttj.noticleaner.notify.island
 
-import java.text.SimpleDateFormat
+import java.time.format.DateTimeFormatter
 import java.util.ArrayDeque
-import java.util.Date
-import java.util.Locale
 
 /**
  * 岛链路诊断环形缓冲（islandv2plan.md P1）：
@@ -15,10 +13,12 @@ object IslandTrace {
     private const val MAX = 40
     private val lock = Any()
     private val entries = ArrayDeque<String>()
-    private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+
+    // 1.3.2（P3-6）：SimpleDateFormat → java.time（不可变、线程安全）
+    private val fmt = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 
     fun log(msg: String) {
-        val line = "${fmt.format(Date())}  $msg"
+        val line = "${java.time.LocalTime.now().format(fmt)}  $msg"
         synchronized(lock) {
             entries.addLast(line)
             while (entries.size > MAX) entries.removeFirst()

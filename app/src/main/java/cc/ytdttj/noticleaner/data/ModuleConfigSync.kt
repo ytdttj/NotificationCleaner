@@ -33,9 +33,11 @@ class ModuleConfigSync(
     @Volatile
     var xposedService: io.github.libxposed.service.XposedService? = null
 
+    @OptIn(FlowPreview::class)
     fun start(scope: CoroutineScope) {
-        scope.launch {
-            @OptIn(FlowPreview::class)
+        // 1.3.2（P1-5）：整个同步协程挪 IO 池 + 500ms 防抖（注释承诺但此前未实现），
+        // 配置抖动合并为一次落盘；commit → apply，不再阻塞 CPU 池线程
+        scope.launch(Dispatchers.IO) {
             combine(
                 ruleDao.listAll(),
                 whitelistDao.listAll(),
@@ -60,15 +62,16 @@ class ModuleConfigSync(
                         )
                     },
                 )
-            }.collect { config ->
-                // 写 prefs（commit 同步，框架监听文件变更推送模块）
-                prefs.edit()
-                    .putString(ModuleConfigCodec.KEY_CONFIG, ModuleConfigCodec.encode(config))
-                    .putLong(ModuleConfigCodec.KEY_DELTA_VERSION, config.deltaVersion)
-                    .commit()
-                // delta 二进制推送（需要框架服务）
-                if (config.deltaVersion != 0L) pushDelta()
             }
+                .debounce(500)
+                .collect { config ->
+                    prefs.edit()
+                        .putString(ModuleConfigCodec.KEY_CONFIG, ModuleConfigCodec.encode(config))
+                        .putLong(ModuleConfigCodec.KEY_DELTA_VERSION, config.deltaVersion)
+                        .apply()
+                    // delta 二进制推送（需要框架服务）
+                    if (config.deltaVersion != 0L) pushDelta()
+                }
         }
     }
 
