@@ -366,6 +366,14 @@ class CleanerListenerService : NotificationListenerService() {
         }
 
         if (decision == DECISION_FILTERED_BY_AI || decision == DECISION_FILTERED_BY_RULE) {
+            // 1.3.2 诊断补盲：岛白名单相关包的通知被拦截时留痕（排查"扣款通知未上岛"——
+            // 此前该路径无任何 trace，无法区分"被拦截"与"岛链路故障"）
+            val island = cc.ytdttj.noticleaner.notify.island.IslandNotifier
+            if (island.isIslandRelevant(sbn)) {
+                cc.ytdttj.noticleaner.notify.island.IslandTrace.log(
+                    "✗ 通知被拦截($decision)不上岛: ${title.take(24)}",
+                )
+            }
             // 清除失败（时机过早等）也记入待取消队列，重连时补撤（1.1.11 兜底）
             val ok = runCatching { cancelNotification(sbn.key) }.isSuccess
             if (!ok) {

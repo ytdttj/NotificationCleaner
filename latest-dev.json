@@ -1,6 +1,6 @@
 {
-  "versionCode": 30,
-  "versionName": "1.3.2 Dev 1",
-  "notes": "1.3.2 Dev 1 更新（性能优化）：\n· 模块端：MIUI 反射缓存、base 模型进程级缓存 + 异步重建，学习不再卡 system_server\n· 决策路径：应用名解析移出实时线程、硬放行改判归一化文本、入库合并单事务（fsync 3→1）\n· 数据层：入库正文截断 500 字、去重改 64 位 contentHash（v6 迁移）\n· AI：FeatureHasher 零装箱开放寻址计数表、fit 密集数组化\n· UI：App 选择器/图标异步加载、历史筛选下推 SQL、搜索防抖\n· 体积：仅 arm64-v8a、图标库瘦身、model.bin 单通道（APK ~12MB）\n· 更新分流：稳定版走 Gitee，Dev 版走 GitHub",
-  "sha256": "EF6279FA05B26B87479698E2ED3A2AE85E4D9600ADA76C28B4E319E51F977F7F"
+  "versionCode": 31,
+  "versionName": "1.3.2 Dev 2",
+  "notes": "1.3.2 Dev 2 更新：\n· 修复超级岛白名单包名错误：招商银行真实包名为 cmb.pb（原 com.cmbchina.cmb.plainpinkage 为错误包名，这就是招行扣款通知未上岛的原因），已保存的勾选集合自动迁移\n· 新增上岛应用：掌上生活（招行信用卡）、工银e生活（需在设置中手动勾选）\n· 恢复设置页「导出诊断日志」入口（检查更新与高级功能之间）\n· 诊断增强：导出内容含岛设置快照与岛链路 trace；白名单包通知被拦截、非白名单包疑似支付通知均留痕\n· 其余同 1.3.2 Dev 1（性能优化）",
+  "sha256": "950086085BC2F4E8AFA33D667E8C2C69955272CB38CA36B8935D664A429141E1"
 }

@@ -45,17 +45,19 @@ object IslandNotifier {
     fun isIslandRelevant(sbn: StatusBarNotification): Boolean =
         effectivePackage(sbn) in packages || sbn.packageName == SHELL_PACKAGE
 
-    /** 默认白名单（islandplan.md §1.1；包名待真机核对，设置页可逐个开关） */
+    /** 默认白名单（islandplan.md §1.1；包名 2026-09-21 真机核对，设置页可逐个开关） */
     val DEFAULT_PACKAGES: Set<String> = linkedSetOf(
-        "com.eg.android.AlipayGphone", // 支付宝
-        "com.tencent.mm",              // 微信
-        "com.unionpay",                // 云闪付
-        "com.icbc",                    // 工商银行
-        "com.chinamworld.main",        // 建设银行
-        "com.android.bankabc",         // 农业银行
-        "com.chinamworld.bocmbci",     // 中国银行
-        "com.bankcomm.BankComm",       // 交通银行
-        "com.cmbchina.cmb.plainpinkage", // 招商银行
+        "com.eg.android.AlipayGphone",        // 支付宝
+        "com.tencent.mm",                     // 微信
+        "com.unionpay",                       // 云闪付
+        "com.icbc",                           // 工商银行
+        "com.icbc.elife",                     // 工银e生活
+        "com.chinamworld.main",               // 建设银行
+        "com.android.bankabc",                // 农业银行
+        "com.chinamworld.bocmbci",            // 中国银行
+        "com.bankcomm.BankComm",              // 交通银行
+        "cmb.pb",                             // 招商银行（注意：真实包名即 cmb.pb）
+        "com.cmbchina.ccd.pluto.cmbActivity", // 掌上生活（招行信用卡 App）
     )
 
     /** 白名单中文显示名（设置页 chip + 岛卡片标题用） */
@@ -64,11 +66,21 @@ object IslandNotifier {
         "com.tencent.mm" to "微信",
         "com.unionpay" to "云闪付",
         "com.icbc" to "工商银行",
+        "com.icbc.elife" to "工银e生活",
         "com.chinamworld.main" to "建设银行",
         "com.android.bankabc" to "农业银行",
         "com.chinamworld.bocmbci" to "中国银行",
         "com.bankcomm.BankComm" to "交通银行",
-        "com.cmbchina.cmb.plainpinkage" to "招商银行",
+        "cmb.pb" to "招商银行",
+        "com.cmbchina.ccd.pluto.cmbActivity" to "掌上生活",
+    )
+
+    /**
+     * 已废弃包名 → 现行包名（1.3.2 Dev 2）：用户 DataStore 里已保存的勾选集合
+     * 按此映射迁移，避免"招行旧包名残留在已存集合里导致上岛静默失效"。
+     */
+    val PACKAGE_MIGRATION: Map<String, String> = mapOf(
+        "com.cmbchina.cmb.plainpinkage" to "cmb.pb",
     )
 
     // ---- 设置热路径缓存（CleanerListenerService.initScope 内收集，决策零 IO） ----
@@ -114,7 +126,15 @@ object IslandNotifier {
             if (inWhitelist) IslandTrace.log("✗ 总开关未开启，跳过")
             return
         }
-        if (!inWhitelist) return
+        if (!inWhitelist) {
+            // 1.3.2 诊断补盲：白名单外的包若解析出支付金额，留痕包名——
+            // 排查"银行 App 更新后包名变化导致上岛静默失效"（此前这里完全无声）
+            val hit = runCatching { PaymentExtractor.extract(title, content) }.getOrNull()
+            if (hit != null) {
+                IslandTrace.log("✗ 非白名单包疑似支付通知 pkg=$pkg raw=${sbn.packageName} title=${title.take(20)}")
+            }
+            return
+        }
         val payment = runCatching { PaymentExtractor.extract(title, content) }
             .getOrElse { Log.w(TAG, "extract failed", it); null }
         if (payment == null) {
@@ -263,4 +283,14 @@ object IslandNotifier {
             context.packageManager.getApplicationInfo(pkg, 0),
         ).toString()
     }.getOrDefault(pkg)
+
+    /** 岛设置快照（DiagExporter 诊断头用，1.3.2 诊断补盲） */
+    fun diagSnapshot(): String = buildString {
+        appendLine("岛开关: $enabled")
+        appendLine(
+            "岛盲窗: ${bypassMs}ms 模式=" +
+                if (dropBlind) "iptables DROP（免 LSPosed，需 Root）" else "xmsf auth hook（LSPosed）",
+        )
+        appendLine("岛白名单(${packages.size}): ${packages.joinToString()}")
+    }
 }

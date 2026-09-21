@@ -118,4 +118,30 @@ class PaymentExtractorTest {
         assertNotNull(p)
         assertEquals("128.00", p!!.amountText)
     }
+
+    // ---- 真实文案回归（2026-09-20 招行通知未上岛排查：解析非故障点，锁定行为） ----
+
+    @Test
+    fun `招行快捷支付扣款通知`() {
+        val p = extract(
+            "招商银行",
+            "您账户****1234于2026年9月21日08:31在【财付通-微信支付-中铁网络】发生快捷支付扣款，人民币111.00",
+        )
+        assertNotNull(p)
+        assertEquals(PaymentExtractor.Currency.CNY, p!!.currency)
+        assertEquals("111.00", p.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+        assertEquals("-¥111.00\u2009", p.capsuleText)
+    }
+
+    @Test
+    fun `日期数字不误判为金额`() {
+        // 无币种特征的日期/时间数字不应抢在真实金额前成为主金额
+        val p = extract(
+            "招商银行",
+            "您账户****1234于2026年9月21日08:31发生快捷支付扣款，人民币111.00",
+        )
+        assertNotNull(p)
+        assertEquals("111.00", p!!.amountText)
+    }
 }

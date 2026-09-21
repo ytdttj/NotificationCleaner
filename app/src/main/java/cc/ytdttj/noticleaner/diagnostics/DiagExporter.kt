@@ -28,6 +28,9 @@ object DiagExporter {
         "NotiCleaner:*",    // LSPosed 模块
         "UpdateVM:*",       // 应用内更新
         "ModelRepository:*",// 模型加载/学习
+        "NCIsland:*",       // 岛链路 trace
+        "IslandNotifier:*", // 岛通知解析/入队
+        "IslandBypass:*",   // 岛通知盲窗发送
     )
 
     /** @return 导出的日志文件；失败抛异常由调用方提示 */
@@ -36,6 +39,11 @@ object DiagExporter {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val out = File(dir, "NotiCleaner-log-$stamp.txt")
         out.writeText(buildHeader(context))
+        out.appendText("\n==== 岛链路 trace（内存环形缓冲，最近 40 条，进程重启即清空）====\n")
+        out.appendText(
+            runCatching { cc.ytdttj.noticleaner.notify.island.IslandTrace.dump() }
+                .getOrDefault("(trace 读取失败)"),
+        )
         out.appendText("\n================ logcat dump ================\n")
         out.appendText(dumpLogcat())
         out
@@ -59,6 +67,9 @@ object DiagExporter {
             appendLine("监听连接状态: ${CleanerListenerService.isListenerConnected()}")
             appendLine("过滤阈值: $threshold")
             appendLine("拦截模式: ${if (intercept) "拦截" else "仅标记"}")
+            appendLine(runCatching {
+                cc.ytdttj.noticleaner.notify.island.IslandNotifier.diagSnapshot()
+            }.getOrDefault("岛设置快照读取失败"))
             appendLine("================")
         }
     }

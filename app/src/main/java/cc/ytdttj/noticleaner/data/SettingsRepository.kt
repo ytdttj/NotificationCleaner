@@ -69,8 +69,16 @@ class SettingsRepository(private val context: Context) {
     // ---- 超级岛（island 分支功能）----
 
     val islandEnabled: Flow<Boolean> = context.dataStore.data.map { it[keyIslandEnabled] ?: false }
-    val islandPackages: Flow<Set<String>> =
-        context.dataStore.data.map { it[keyIslandPackages] ?: IslandNotifier.DEFAULT_PACKAGES }
+
+    /**
+     * 岛白名单（1.3.2 Dev 2：读取时应用废弃包名迁移——
+     * 老版本保存的勾选集合里"com.cmbchina.cmb.plainpinkage"→"cmb.pb"，
+     * 避免招行旧包名残留导致上岛静默失效）
+     */
+    val islandPackages: Flow<Set<String>> = context.dataStore.data.map { prefs ->
+        val saved = prefs[keyIslandPackages] ?: return@map IslandNotifier.DEFAULT_PACKAGES
+        saved.map { IslandNotifier.PACKAGE_MIGRATION[it] ?: it }.toSet()
+    }
     val islandBypassMs: Flow<Int> = context.dataStore.data.map { it[keyIslandBypassMs] ?: 100 }
 
     /** 免 LSPosed 模式：iptables DROP 盲窗（需 Root），关闭时走 xmsf auth hook */

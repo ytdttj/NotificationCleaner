@@ -30,6 +30,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -619,6 +620,57 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 }
             }
         }
+        // ---- 导出诊断日志（1.3.2 恢复：1.3.0 设置页重排时丢失）----
+        // 内容 = 版本/权限/岛设置快照 + 岛链路 trace + logcat，经系统分享
+        val diagContext = LocalContext.current
+        val diagScope = rememberCoroutineScope()
+        var diagExporting by remember { mutableStateOf(false) }
+        var diagMsg by remember { mutableStateOf<String?>(null) }
+        Spacer(Modifier.height(12.dp))
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("导出诊断日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "版本/权限/岛链路状态快照 + logcat，经系统分享发送给开发者排查",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(
+                        enabled = !diagExporting,
+                        onClick = {
+                            diagExporting = true
+                            diagScope.launch {
+                                val msg = runCatching {
+                                    val file = cc.ytdttj.noticleaner.diagnostics.DiagExporter.export(diagContext)
+                                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                                        diagContext,
+                                        "${diagContext.packageName}.fileprovider",
+                                        file,
+                                    )
+                                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    diagContext.startActivity(
+                                        android.content.Intent.createChooser(send, "分享诊断日志"),
+                                    )
+                                    "已导出: ${file.name}"
+                                }.getOrElse { "导出失败: ${it.message}" }
+                                diagExporting = false
+                                diagMsg = msg
+                            }
+                        },
+                    ) { Text(if (diagExporting) "导出中…" else "导出") }
+                }
+                diagMsg?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+            }
+        }
         // ---- 高级功能（1.3.0 beta2：默认折叠） ----
         var advancedOpen by remember { mutableStateOf(false) }
         var confirmResetModel by remember { mutableStateOf(false) }
@@ -730,7 +782,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     HorizontalDivider()
                     Spacer(Modifier.height(12.dp))        // ---- 通知模拟（island 测试：Shell 身份发通知进完整管线） ----
         val simulateBusy by vm.simulateBusy.collectAsState()
-        var simPkg by remember { mutableStateOf("com.cmbchina.cmb.plainpinkage") }
+        var simPkg by remember { mutableStateOf("cmb.pb") }
         var simTitle by remember { mutableStateOf("") }
         var simContent by remember { mutableStateOf("") }
         var simMenu by remember { mutableStateOf(false) }
