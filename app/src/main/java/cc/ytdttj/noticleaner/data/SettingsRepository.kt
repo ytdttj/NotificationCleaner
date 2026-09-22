@@ -113,6 +113,26 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[keyUpdateChannel] = value }
     }
 
+    // ---- 界面风格（1.4.0 Dev 4）：MATERIAL=Material 3 / GLASS=液态玻璃（Kyant0 Backdrop） ----
+    private val keyUiTheme = stringPreferencesKey("ui_theme")
+
+    /** 取值为 [cc.ytdttj.noticleaner.ui.UiTheme] 的 name */
+    val uiTheme: Flow<String> = context.dataStore.data.map { it[keyUiTheme] ?: "MATERIAL" }
+
+    suspend fun setUiTheme(value: String) {
+        context.dataStore.edit { it[keyUiTheme] = value }
+    }
+
+    // ---- 玻璃清晰度（1.4.0 Dev 5）：FROSTED=磨砂（可读性） / SOFT=柔光（近乎全透明） ----
+    private val keyGlassStyle = stringPreferencesKey("glass_style")
+
+    /** 取值为 [cc.ytdttj.noticleaner.ui.GlassStyle] 的 name；仅玻璃主题下生效 */
+    val glassStyle: Flow<String> = context.dataStore.data.map { it[keyGlassStyle] ?: "FROSTED" }
+
+    suspend fun setGlassStyle(value: String) {
+        context.dataStore.edit { it[keyGlassStyle] = value }
+    }
+
     suspend fun setThreshold(value: Float) {
         val clamped = value.coerceIn(0.5f, 1.0f)
         context.dataStore.edit { it[keyThreshold] = clamped }

@@ -1,6 +1,6 @@
 {
-  "versionCode": 34,
-  "versionName": "1.4.0 Dev 2",
-  "notes": "1.4.0 Dev 2 发布（versionCode 34）。修复：设置页「导出诊断日志」与「高级功能」间隔缺失；「通知模拟」默认隐藏（设置 tab 连点 5 次解锁后显示）；规则页每条规则显示累计过滤条数。接续 Dev 1 的 Material You 动态取色 UI 改造，功能逻辑无改动。",
-  "sha256": "85B468BB5D42D21947E08B49D053696CC0AC57D04C69B8421C1671669587C7AB"
+  "versionCode": 42,
+  "versionName": "1.4.0 Dev 10",
+  "notes": "1.4.0 Dev 10 发布（versionCode 42）。全新「液态玻璃」界面体系：设置内可在 Material 3 与液态玻璃双皮肤间切换，同一份布局零功能差异。玻璃实现基于 Kyant0 Backdrop 实时采样——AGSL 折射 + 轻模糊（透而清，可透出底下文字轮廓）+ 连续曲率平滑圆角（squircle）+ 内阴影与柔影；淡蓝纯色背景；悬浮玻璃底栏实时透视页面滚动内容，选中项以 Material You 动态取色主色高亮；卡片/顶栏/对话框/底弹层/输入框/按钮全套玻璃控件，弹窗自动降级磨砂。",
+  "sha256": "46361907D9546998BFFC0A38DA412E1A32708FF5CB6D6C5B40BBAA737B0EE5B3"
 }

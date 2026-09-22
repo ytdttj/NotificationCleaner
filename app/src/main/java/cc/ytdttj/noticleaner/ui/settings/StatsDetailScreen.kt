@@ -92,9 +92,9 @@ fun StatsDetailScreen(
         StatsMode.Learned -> learned
     }
 
-    Scaffold(
+    cc.ytdttj.noticleaner.ui.glass.NcScaffold(
         topBar = {
-            TopAppBar(
+            cc.ytdttj.noticleaner.ui.glass.NcTopAppBar(
                 title = { Text(if (mode is StatsMode.Filtered) "已过滤的通知" else "已学习的通知") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
@@ -113,7 +113,7 @@ fun StatsDetailScreen(
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(12.dp)) {
                 items(items, key = { it.id }) { n ->
-                    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Column(Modifier.padding(12.dp)) {
                             Row {
                                 Text(n.appName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)

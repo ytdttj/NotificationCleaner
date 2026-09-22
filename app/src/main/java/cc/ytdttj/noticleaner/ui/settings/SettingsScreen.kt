@@ -21,6 +21,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -78,6 +81,20 @@ class SettingsViewModel(
 
     /** 通知模拟解锁（设置 tab 快速点击 5 次，1.3.0 beta2） */
     val simUnlocked = settings.simUnlocked.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // ---- 界面风格（1.4.0 Dev 4）：Material 3 / 液态玻璃 ----
+    val uiTheme = settings.uiTheme.stateIn(viewModelScope, SharingStarted.Eagerly, cc.ytdttj.noticleaner.ui.UiTheme.MATERIAL.name)
+
+    fun setUiTheme(mode: cc.ytdttj.noticleaner.ui.UiTheme) {
+        viewModelScope.launch { settings.setUiTheme(mode.name) }
+    }
+
+    // ---- 玻璃清晰度（1.4.0 Dev 5）：磨砂 / 柔光 ----
+    val glassStyle = settings.glassStyle.stateIn(viewModelScope, SharingStarted.Eagerly, cc.ytdttj.noticleaner.ui.GlassStyle.FROSTED.name)
+
+    fun setGlassStyle(style: cc.ytdttj.noticleaner.ui.GlassStyle) {
+        viewModelScope.launch { settings.setGlassStyle(style.name) }
+    }
 
     private val _keepAlive = MutableStateFlow(KeepAliveStatus())
     val keepAlive: StateFlow<KeepAliveStatus> = _keepAlive
@@ -385,6 +402,8 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
     val execBusy by vm.execBusy.collectAsState()
     var thresholdInput by remember(threshold) { mutableStateOf("%.2f".format(threshold)) }
     val simUnlocked by vm.simUnlocked.collectAsState()
+    val uiThemeMode by vm.uiTheme.collectAsState()
+    val glassStyleMode by vm.glassStyle.collectAsState()
     val islandProbe by vm.islandProbe.collectAsState()
     val manufacturerHint = remember { ServiceLocator.keepAlive.manufacturerAutoStartHint() }
 
@@ -405,8 +424,49 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
     ) {
+        // ---- 界面风格切换（1.4.0 Dev 4）：液态玻璃 / Material 3 ----
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("界面风格", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("液态玻璃或 Material 3；玻璃模式含壁纸折射、磨砂卡片与胶囊底栏", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(
+                    checked = uiThemeMode == cc.ytdttj.noticleaner.ui.UiTheme.GLASS.name,
+                    onCheckedChange = {
+                        vm.setUiTheme(
+                            if (it) cc.ytdttj.noticleaner.ui.UiTheme.GLASS else cc.ytdttj.noticleaner.ui.UiTheme.MATERIAL,
+                        )
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ---- 玻璃清晰度（1.4.0 Dev 5）：仅玻璃主题下显示 ----
+        if (uiThemeMode == cc.ytdttj.noticleaner.ui.UiTheme.GLASS.name) {
+            cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("玻璃清晰度", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text("柔光玻璃近乎全透明；磨砂玻璃提供一定可读性", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        cc.ytdttj.noticleaner.ui.GlassStyle.entries.forEachIndexed { index, style ->
+                            SegmentedButton(
+                                selected = glassStyleMode == style.name,
+                                onClick = { vm.setGlassStyle(style) },
+                                shape = SegmentedButtonDefaults.itemShape(index = index, count = cc.ytdttj.noticleaner.ui.GlassStyle.entries.size),
+                            ) { Text(style.label) }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
         // ---- 拦截模式 ----
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("拦截模式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -418,14 +478,14 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         Spacer(Modifier.height(12.dp))
 
         // ---- 过滤阈值 ----
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("过滤阈值", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text("AI 判定广告概率 ≥ 阈值时自动清除。范围 0.5~1.0，默认 0.8。", style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedTextField(
                         value = thresholdInput,
                         onValueChange = { s ->
                             // 仅编辑本地输入，点击"保存"后才生效
@@ -458,7 +518,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         Spacer(Modifier.height(12.dp))
 
         // ---- 统计 ----
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("统计", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
@@ -482,7 +542,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         Spacer(Modifier.height(12.dp))
 
         // ---- 多任务隐藏 ----
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("在多任务界面隐藏", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -498,7 +558,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
 
         // ---- 权限检查（1.3.0 beta2：原「后台保活」，高级项折叠） ----
         var permAdvancedOpen by remember { mutableStateOf(false) }
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("权限检查", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
@@ -571,7 +631,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         val updateState by updateVm.state.collectAsState()
         val updateChannel by updateVm.channel.collectAsState()
         var channelMenuOpen by remember { mutableStateOf(false) }
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -581,7 +641,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    OutlinedButton(
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
                         enabled = updateState !is cc.ytdttj.noticleaner.update.UpdateState.Checking,
                         onClick = { updateVm.checkUpdate() },
                     ) { Text("检查") }
@@ -589,7 +649,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 Spacer(Modifier.height(8.dp))
                 // 1.3.2 更新分流：稳定版 → Gitee（x.x.x）；Dev 版 → GitHub（x.x.x Dev N），默认稳定版
                 androidx.compose.foundation.layout.Box {
-                    OutlinedButton(
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
                         onClick = { channelMenuOpen = true },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -627,7 +687,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         var diagExporting by remember { mutableStateOf(false) }
         var diagMsg by remember { mutableStateOf<String?>(null) }
         Spacer(Modifier.height(12.dp))
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -637,7 +697,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    OutlinedButton(
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
                         enabled = !diagExporting,
                         onClick = {
                             diagExporting = true
@@ -675,7 +735,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         // ---- 高级功能（1.3.0 beta2：默认折叠） ----
         var advancedOpen by remember { mutableStateOf(false) }
         var confirmResetModel by remember { mutableStateOf(false) }
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(
                     Modifier.fillMaxWidth().clickable { advancedOpen = !advancedOpen },
@@ -698,7 +758,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         val islandPackages by vm.islandPackages.collectAsState()
         val islandDropBlind by vm.islandDropBlind.collectAsState()
         var showDiag by remember { mutableStateOf(false) }
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("超级岛支付提醒（实验）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
@@ -742,14 +802,14 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 }
                 Spacer(Modifier.height(8.dp))
                 Row {
-                    OutlinedButton(enabled = islandEnabled, onClick = { vm.sendTestIsland() }) {
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(enabled = islandEnabled, onClick = { vm.sendTestIsland() }) {
                         Text("发送测试岛")
                     }
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = { showDiag = true }) { Text("诊断日志") }
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = { showDiag = true }) { Text("诊断日志") }
                 }
                 if (showDiag) {
-                    androidx.compose.material3.AlertDialog(
+                    cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                         onDismissRequest = { showDiag = false },
                         title = { Text("岛链路诊断") },
                         text = {
@@ -790,7 +850,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
         var simTitle by remember { mutableStateOf("") }
         var simContent by remember { mutableStateOf("") }
         var simMenu by remember { mutableStateOf(false) }
-        Card(Modifier.fillMaxWidth()) {
+        cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("通知模拟（测试）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
@@ -801,7 +861,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 )
                 Spacer(Modifier.height(8.dp))
                 androidx.compose.foundation.layout.Box {
-                    OutlinedButton(onClick = { simMenu = true }) {
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = { simMenu = true }) {
                         Text(
                             "模拟来源：" +
                                 (cc.ytdttj.noticleaner.notify.island.IslandNotifier.PACKAGE_LABELS[simPkg] ?: simPkg),
@@ -820,7 +880,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
+                cc.ytdttj.noticleaner.ui.glass.NcOutlinedTextField(
                     value = simTitle,
                     onValueChange = { simTitle = it },
                     label = { Text("通知标题") },
@@ -828,7 +888,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
+                cc.ytdttj.noticleaner.ui.glass.NcOutlinedTextField(
                     value = simContent,
                     onValueChange = { simContent = it },
                     label = { Text("通知内容（含金额即可上岛，如：您消费 ¥25.00）") },
@@ -841,7 +901,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                         onClick = { vm.simulateDirect(simPkg, simTitle, simContent) },
                     ) { Text(if (simulateBusy) "发送中…" else "注入管线（推荐）") }
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
                         enabled = !simulateBusy,
                         onClick = { vm.simulateNotification(simPkg, simTitle, simContent) },
                     ) { Text("Shell 通知方式") }
@@ -865,9 +925,9 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     Spacer(Modifier.height(4.dp))
                     Text(modelInfo, style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(8.dp))
-                    OutlinedButton(onClick = { confirmResetModel = true }) { Text("重置模型（回到预训练基线）") }
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = { confirmResetModel = true }) { Text("重置模型（回到预训练基线）") }
                     if (confirmResetModel) {
-                        androidx.compose.material3.AlertDialog(
+                        cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                             onDismissRequest = { confirmResetModel = false },
                             title = { Text("确认重置模型？") },
                             text = { Text("将清除所有学习标注，模型回到预训练基线。已拦截统计不受影响，此操作不可撤销。") },
@@ -893,14 +953,14 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
             is cc.ytdttj.noticleaner.update.UpdateState.Error -> UpdateStatusDialog(
                 title = "更新失败", text = s.message, confirm = "知道了", onDismiss = { updateVm.reset() },
             )
-            is cc.ytdttj.noticleaner.update.UpdateState.Available -> androidx.compose.material3.AlertDialog(
+            is cc.ytdttj.noticleaner.update.UpdateState.Available -> cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                 onDismissRequest = { updateVm.reset() },
                 title = { Text("发现新版本 v${s.release.versionName}") },
                 text = { Column { Text(s.release.notes.ifBlank { "无更新说明" }, style = MaterialTheme.typography.bodyMedium) } },
                 confirmButton = { TextButton(onClick = { updateVm.startDownload(s.release) }) { Text("立即更新") } },
                 dismissButton = { TextButton(onClick = { updateVm.reset() }) { Text("稍后再说") } },
             )
-            is cc.ytdttj.noticleaner.update.UpdateState.Downloading -> androidx.compose.material3.AlertDialog(
+            is cc.ytdttj.noticleaner.update.UpdateState.Downloading -> cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                 onDismissRequest = {},
                 title = { Text("正在下载 v${s.release.versionName}") },
                 text = {
@@ -915,7 +975,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 },
                 confirmButton = { TextButton(onClick = { updateVm.cancelDownload() }) { Text("取消") } },
             )
-            is cc.ytdttj.noticleaner.update.UpdateState.ReadyToInstall -> androidx.compose.material3.AlertDialog(
+            is cc.ytdttj.noticleaner.update.UpdateState.ReadyToInstall -> cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                 onDismissRequest = { updateVm.reset() },
                 title = { Text("下载完成") },
                 text = { Text("点击「安装」打开系统安装器升级到 v${s.release.versionName}。") },
@@ -927,7 +987,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
 
         // ---- 高级保活执行结果弹窗 ----
         execResult?.let { result ->
-            androidx.compose.material3.AlertDialog(
+            cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                 onDismissRequest = { vm.dismissExecResult() },
                 title = { Text("保活命令执行结果") },
                 text = {
@@ -943,7 +1003,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
 
 @Composable
 private fun UpdateStatusDialog(title: String, text: String, confirm: String?, onDismiss: () -> Unit) {
-    androidx.compose.material3.AlertDialog(
+    cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = { Text(text) },

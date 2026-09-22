@@ -6,8 +6,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 // 1.3.2（P3-7①）：material-icons-extended → core（History/Rule 为 extended 独有，
@@ -21,11 +25,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -195,94 +203,75 @@ fun MainScaffold() {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: "history"
+    // 1.4.0 Dev 4：界面风格（M3 / 液态玻璃）——底栏与所有页面容器随主题切换
+    val uiThemeName by cc.ytdttj.noticleaner.ServiceLocator.settings.uiTheme.collectAsState(
+        initial = UiTheme.MATERIAL.name,
+    )
+    val glassMode = UiTheme.from(uiThemeName) == UiTheme.GLASS
 
     // ---- 1.3.0 beta2：设置 tab 快速点击 5 次 → 解锁通知模拟（隐藏测试功能） ----
     val settingsTaps = remember { mutableListOf<Long>() }
     var showSimUnlockDialog by remember { mutableStateOf(false) }
 
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                tabs.forEach { tab ->
-                    NavigationBarItem(
-                        selected = currentRoute == tab.route,
-                        onClick = {
-                            if (tab.route == "settings") {
-                                val now = System.currentTimeMillis()
-                                settingsTaps.add(now)
-                                while (settingsTaps.size > 5) settingsTaps.removeAt(0)
-                                if (settingsTaps.size == 5 && now - settingsTaps.first() < 3000) {
-                                    settingsTaps.clear()
-                                    showSimUnlockDialog = true
-                                }
-                            }
-                            navController.navigate(tab.route) {
-                                popUpTo(navController.graph.startDestinationId) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        icon = { Icon(tab.icon, contentDescription = tab.label) },
-                        label = { Text(tab.label) },
-                    )
-                }
+    fun onTabClick(route: String) {
+        if (route == "settings") {
+            val now = System.currentTimeMillis()
+            settingsTaps.add(now)
+            while (settingsTaps.size > 5) settingsTaps.removeAt(0)
+            if (settingsTaps.size == 5 && now - settingsTaps.first() < 3000) {
+                settingsTaps.clear()
+                showSimUnlockDialog = true
             }
-        },
-    ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = "history",
-            modifier = Modifier.padding(padding),
+        }
+        navController.navigate(route) {
+            popUpTo(navController.graph.startDestinationId) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
+    if (glassMode) {
+        // 液态玻璃（1.4.0 Dev 7）：底栏必须走 floatingBar——它要采样 contentBackdrop（页面真实内容），
+        // 因此绝不能落在 content 采样子树内，否则构成 RenderNode 自引用环 → 原生崩溃。
+        cc.ytdttj.noticleaner.ui.glass.GlassRoot(
+            modifier = Modifier.fillMaxSize(),
+            floatingBar = {
+                cc.ytdttj.noticleaner.ui.glass.GlassBottomBar(
+                    items = tabs.map { cc.ytdttj.noticleaner.ui.glass.GlassNavItem(it.route, it.label, it.icon) },
+                    selectedRoute = currentRoute,
+                    onItemClick = ::onTabClick,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            },
         ) {
-            composable("history") { HistoryScreen() }
-            composable("rules") {
-                RulesScreen(
-                    onOpenRuleEdit = { navController.navigate("ruleedit") },
-                    onOpenAppPicker = { navController.navigate("apppicker/白名单") },
-                )
+            Scaffold(
+                containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+            ) { padding ->
+                MainNavHost(navController = navController, modifier = Modifier.padding(padding))
             }
-            composable("settings") {
-                SettingsScreen(onOpenStats = { navController.navigate("stats/$it") })
-            }
-            composable("stats/{mode}") { entry ->
-                val mode = entry.arguments?.getString("mode") ?: "filtered"
-                StatsDetailScreen(mode, onBack = { navController.popBackStack() })
-            }
-            composable("ruleedit") {
-                RuleEditScreen(
-                    onBack = { navController.popBackStack() },
-                    openAppPicker = { navController.navigate("apppicker/选择 APP") },
-                )
-            }
-            composable("apppicker/{title}") { entry ->
-                val title = entry.arguments?.getString("title") ?: "选择 APP"
-                AppPickerScreen(
-                    title = title,
-                    multiSelect = true,
-                    onBack = { navController.popBackStack() },
-                    onConfirm = {
-                        // 白名单模式：直接入库；规则模式：结果由 RuleEditScreen 回读
-                        if (title == "白名单") {
-                            val scope = cc.ytdttj.noticleaner.ServiceLocator.appScope
-                            scope.launch {
-                                it.forEach { (pkg, label) ->
-                                    ServiceLocator.db.whitelistDao().insert(
-                                        cc.ytdttj.noticleaner.data.db.WhitelistEntity(packageName = pkg, appName = label),
-                                    )
-                                }
-                            }
-                        } else {
-                            AppPickerSession.result = it
-                        }
-                        navController.popBackStack()
-                    },
-                )
-            }
+        }
+    } else {
+        Scaffold(
+            bottomBar = {
+                NavigationBar {
+                    tabs.forEach { tab ->
+                        NavigationBarItem(
+                            selected = currentRoute == tab.route,
+                            onClick = { onTabClick(tab.route) },
+                            icon = { Icon(tab.icon, contentDescription = tab.label) },
+                            label = { Text(tab.label) },
+                        )
+                    }
+                }
+            },
+        ) { padding ->
+            MainNavHost(navController = navController, modifier = Modifier.padding(padding))
         }
     }
 
     if (showSimUnlockDialog) {
-        androidx.compose.material3.AlertDialog(
+        cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
             onDismissRequest = { showSimUnlockDialog = false },
             title = { Text("启用通知模拟？") },
             text = { Text("通知模拟为隐藏测试功能：可模拟银行/支付类通知进入过滤管线与超级岛，普通用户无需开启。") },
@@ -298,5 +287,60 @@ fun MainScaffold() {
                 androidx.compose.material3.TextButton(onClick = { showSimUnlockDialog = false }) { Text("取消") }
             },
         )
+    }
+}
+
+/** 主导航（两套皮肤共用，路由定义唯一） */
+@Composable
+private fun MainNavHost(navController: androidx.navigation.NavHostController, modifier: Modifier = Modifier) {
+    NavHost(
+        navController = navController,
+        startDestination = "history",
+        modifier = modifier,
+    ) {
+        composable("history") { HistoryScreen() }
+        composable("rules") {
+            RulesScreen(
+                onOpenRuleEdit = { navController.navigate("ruleedit") },
+                onOpenAppPicker = { navController.navigate("apppicker/白名单") },
+            )
+        }
+        composable("settings") {
+            SettingsScreen(onOpenStats = { navController.navigate("stats/$it") })
+        }
+        composable("stats/{mode}") { entry ->
+            val mode = entry.arguments?.getString("mode") ?: "filtered"
+            StatsDetailScreen(mode, onBack = { navController.popBackStack() })
+        }
+        composable("ruleedit") {
+            RuleEditScreen(
+                onBack = { navController.popBackStack() },
+                openAppPicker = { navController.navigate("apppicker/选择 APP") },
+            )
+        }
+        composable("apppicker/{title}") { entry ->
+            val title = entry.arguments?.getString("title") ?: "选择 APP"
+            AppPickerScreen(
+                title = title,
+                multiSelect = true,
+                onBack = { navController.popBackStack() },
+                onConfirm = {
+                    // 白名单模式：直接入库；规则模式：结果由 RuleEditScreen 回读
+                    if (title == "白名单") {
+                        val scope = cc.ytdttj.noticleaner.ServiceLocator.appScope
+                        scope.launch {
+                            it.forEach { (pkg, label) ->
+                                ServiceLocator.db.whitelistDao().insert(
+                                    cc.ytdttj.noticleaner.data.db.WhitelistEntity(packageName = pkg, appName = label),
+                                )
+                            }
+                        }
+                    } else {
+                        AppPickerSession.result = it
+                    }
+                    navController.popBackStack()
+                },
+            )
+        }
     }
 }

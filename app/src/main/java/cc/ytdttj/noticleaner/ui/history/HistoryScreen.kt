@@ -94,7 +94,7 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
         }
     }
 
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+    cc.ytdttj.noticleaner.ui.glass.NcScaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -150,7 +150,7 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
         }
 
         selected?.let { n ->
-            ModalBottomSheet(onDismissRequest = { vm.select(null) }) {
+            cc.ytdttj.noticleaner.ui.glass.NcModalBottomSheet(onDismissRequest = { vm.select(null) }) {
                 NotificationDetail(
                     n = n,
                     onJumpChannel = {
@@ -264,7 +264,7 @@ private fun renderAppIcon(
 
 @Composable
 private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
+    cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
         Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             AppIcon(n.packageName, 40, fallbackText = n.appName)
             Column(Modifier.weight(1f)) {
@@ -356,7 +356,7 @@ private fun NotificationDetail(
                 else -> "正常通知"
             }
             Button(onClick = { onLearn(1) }, Modifier.weight(1f)) { Text(adText) }
-            OutlinedButton(onClick = { onLearn(0) }, Modifier.weight(1f)) { Text(normalText) }
+            cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = { onLearn(0) }, Modifier.weight(1f)) { Text(normalText) }
         }
         if (n.learned) {
             Spacer(Modifier.height(8.dp))

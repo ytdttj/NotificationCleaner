@@ -113,7 +113,7 @@ fun RulesScreen(
     val hitCounts by vm.ruleHitCounts.collectAsState()
     var tab by remember { mutableStateOf(0) } // 0=过滤规则 1=白名单
 
-    Scaffold(
+    cc.ytdttj.noticleaner.ui.glass.NcScaffold(
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 if (tab == 0) onOpenRuleEdit() else {
@@ -190,7 +190,7 @@ private fun RuleSummary(rule: RuleEntity) {
 
 @Composable
 private fun RuleCard(rule: RuleEntity, hitCount: Int, onToggle: (Boolean) -> Unit, onDelete: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 RuleSummary(rule)
@@ -210,7 +210,7 @@ private fun RuleCard(rule: RuleEntity, hitCount: Int, onToggle: (Boolean) -> Uni
 
 @Composable
 private fun WhitelistCard(item: WhitelistEntity, onRemove: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(item.appName, style = MaterialTheme.typography.titleSmall)

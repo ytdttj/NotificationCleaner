@@ -17,8 +17,8 @@ android {
         // —— Android 12+ 动态取色全量可用，且无需为低版本维护取色降级路径
         minSdk = 33
         targetSdk = 36
-        versionCode = 34
-        versionName = "1.4.0 Dev 2"
+        versionCode = 42
+        versionName = "1.4.0 Dev 10"
         // 1.3.2（P3-7③）：只保留 arm64-v8a——剔除其余架构（armeabi-v7a/x86/x86_64）
         // 的原生库，精简 APK 体积；目标设备为真机 ARM64（模块端同样仅注入 arm64 设备）
         ndk {
@@ -84,6 +84,16 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.navigation:navigation-compose:2.9.5")
+
+    // dev 分支 UI 改造（1.4.0 Dev 4，方案 C）：Kyant0 Backdrop——液态玻璃效果
+    // （backdrop 采样 + AGSL 折射着色器 + RenderEffect 模糊，minSdk 33 全量可用）。
+    // 注意：2.x 依赖 CMP 1.12（androidx compose 1.12 要求 AGP 9.1+），1.0.6 基于
+    // androidx compose 1.10 与当前 AGP 8.13 / compose 1.11 兼容
+    implementation("io.github.kyant0:backdrop:1.0.6")
+    // backdrop 的平滑圆角形状库（Capsule/RoundedRectangle + Continuous 连续曲率）：
+    // pom 里声明了传递依赖，但 Gradle 按 .module 元数据解析 KMP 库时 Android 变体不带它，
+    // 必须显式引入——lens 折射着色器的形状白名单只认这个库的 RoundedRectangularShape
+    implementation("io.github.kyant0:shapes:1.2.0")
 
     implementation("androidx.room:room-runtime:2.8.2")
     implementation("androidx.room:room-ktx:2.8.2")
