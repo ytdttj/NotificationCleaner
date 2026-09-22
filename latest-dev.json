@@ -1,6 +1,6 @@
 {
-  "versionCode": 33,
-  "versionName": "1.4.0 Dev 1",
-  "notes": "1.4.0 Dev 1 发布（versionCode 33）。UI 改造阶段一：Material You 动态取色 + 统一大圆角主题（HyperOS 风格）、应用更名「通知净化」、minSdk 提升至 33（Android 13+）。功能逻辑无改动。",
-  "sha256": "25F617D11B4CEC44B18E098E3884A673384A4D345950690B2FE874C1BEF6601D"
+  "versionCode": 34,
+  "versionName": "1.4.0 Dev 2",
+  "notes": "1.4.0 Dev 2 发布（versionCode 34）。修复：设置页「导出诊断日志」与「高级功能」间隔缺失；「通知模拟」默认隐藏（设置 tab 连点 5 次解锁后显示）；规则页每条规则显示累计过滤条数。接续 Dev 1 的 Material You 动态取色 UI 改造，功能逻辑无改动。",
+  "sha256": "85B468BB5D42D21947E08B49D053696CC0AC57D04C69B8421C1671669587C7AB"
 }
