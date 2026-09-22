@@ -13,10 +13,12 @@ android {
 
     defaultConfig {
         applicationId = "cc.ytdttj.noticleaner"
-        minSdk = 26
+        // dev 分支 UI 改造（Material 3 Expressive / Material You）：minSdk 提升至 33
+        // —— Android 12+ 动态取色全量可用，且无需为低版本维护取色降级路径
+        minSdk = 33
         targetSdk = 36
-        versionCode = 32
-        versionName = "1.3.2"
+        versionCode = 33
+        versionName = "1.4.0 Dev 1"
         // 1.3.2（P3-7③）：只保留 arm64-v8a——剔除其余架构（armeabi-v7a/x86/x86_64）
         // 的原生库，精简 APK 体积；目标设备为真机 ARM64（模块端同样仅注入 arm64 设备）
         ndk {
@@ -73,7 +75,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
 
-    implementation(platform("androidx.compose:compose-bom:2025.09.00"))
+    // dev 分支 UI 改造：material3 1.4.0（Material 3 Expressive + Material You 动态取色）。
+    // 注意：选 2026.06.01 而非最新 2026.09.00——后者映射 compose-ui 1.12.1，
+    // 要求 AGP 9.1+，与当前 AGP 8.13 不兼容；1.11.4 + material3 1.4.0 为兼容组合
+    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
