@@ -671,6 +671,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 }
             }
         }
+        Spacer(Modifier.height(12.dp))
         // ---- 高级功能（1.3.0 beta2：默认折叠） ----
         var advancedOpen by remember { mutableStateOf(false) }
         var confirmResetModel by remember { mutableStateOf(false) }
@@ -780,7 +781,10 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
 
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
-                    Spacer(Modifier.height(12.dp))        // ---- 通知模拟（island 测试：Shell 身份发通知进完整管线） ----
+                    Spacer(Modifier.height(12.dp))
+        // ---- 通知模拟（island 测试：Shell 身份发通知进完整管线）----
+        // 仅解锁后显示：设置 tab 3 秒内连点 5 次 → 解锁弹窗（MainActivity），解锁状态持久化于 DataStore
+        if (simUnlocked) {
         val simulateBusy by vm.simulateBusy.collectAsState()
         var simPkg by remember { mutableStateOf("cmb.pb") }
         var simTitle by remember { mutableStateOf("") }
@@ -851,6 +855,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
             }
         }
         Spacer(Modifier.height(12.dp))
+        } // if (simUnlocked)
 
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
