@@ -44,6 +44,12 @@ object DiagExporter {
             runCatching { cc.ytdttj.noticleaner.notify.island.IslandTrace.dump() }
                 .getOrDefault("(trace 读取失败)"),
         )
+        // 1.4.0 Dev 12：环形日志（文件循环存储）——覆盖近 24 小时的全链路事件，
+        // 不随进程崩溃/重启丢失（岛内存 trace 与 logcat 均易滚动，2026-09-23 排查实测）
+        out.appendText("\n==== 环形日志（文件循环存储，保留近 24 小时，崩溃/重启不丢失）====\n")
+        out.appendText(
+            runCatching { RingLog.dump() }.getOrDefault("(环形日志读取失败)"),
+        )
         out.appendText("\n================ logcat dump ================\n")
         out.appendText(dumpLogcat())
         out
