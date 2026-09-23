@@ -111,21 +111,33 @@ private fun glassBorder(dark: Boolean): Color =
  * ——两者数值不同，混用会让控件填充随表面调整一起变透明（暗色下文字可读性下降）。
  */
 private fun glassSurfaceTint(dark: Boolean, strong: Boolean = false, soft: Boolean = false): Color = when {
-    // 柔光玻璃：近乎全透明
-    soft && strong -> if (dark) Color(0xFF0E1420).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.10f)
-    soft -> if (dark) Color(0xFF0E1420).copy(alpha = 0.08f) else Color.White.copy(alpha = 0.04f)
-    // 磨砂玻璃（默认）——Dev 9b「透而清」：tint 是奶层，厚了就发闷；只留最低限度的底色
-    // strong 仅底栏使用：参考同类液态玻璃 App，底栏要能透出下面文字的轮廓——
-    // 着色只留一层薄纱（亮 0.20 / 暗 0.32），模糊交给 blur(2px) 负责
-    dark && strong -> Color(0xFF151B2A).copy(alpha = 0.32f)
-    dark -> Color(0xFF141A28).copy(alpha = 0.18f)
-    strong -> Color.White.copy(alpha = 0.20f)
-    else -> Color.White.copy(alpha = 0.08f)
+    // 柔光玻璃：近乎全透明的清玻璃——玻璃感靠折射，几乎无奶感
+    soft && strong -> if (dark) Color(0xFF0E1420).copy(alpha = 0.10f) else Color.White.copy(alpha = 0.05f)
+    soft -> if (dark) Color(0xFF0E1420).copy(alpha = 0.06f) else Color.White.copy(alpha = 0.03f)
+    // 磨砂玻璃：明显奶感（Dev 11 起与柔光大幅拉开——磨砂就该像磨砂）
+    dark && strong -> Color(0xFF151B2A).copy(alpha = 0.38f)
+    dark -> Color(0xFF141A28).copy(alpha = 0.35f)
+    strong -> Color.White.copy(alpha = 0.32f)
+    else -> Color.White.copy(alpha = 0.30f)
 }
 
-/** 控件填充色（对话框/底弹层/输入框/按钮/顶栏滚动态）：与玻璃表面解耦，不随表面调整变动 */
-private fun glassFillTint(dark: Boolean): Color =
-    if (dark) Color(0xFF151B2A).copy(alpha = 0.62f) else Color.White.copy(alpha = 0.55f)
+/**
+ * 控件填充色（对话框/底弹层/输入框/按钮/顶栏滚动态）：与玻璃表面解耦，不随表面调整变动。
+ *
+ * Dev 11：这些控件都在独立窗口或密集内容之上、**没有 backdrop 采样**（无法折射/模糊），
+ * 只能靠填充浓度保证可读性——真机实测半透明填充会让弹窗文字与背景列表文字重叠（Dev 10 反馈）。
+ * 同时两档玻璃拉开浓度差：磨砂近实心，柔光保留一定通透但仍在可读线之上。
+ */
+@Composable
+private fun glassFillTint(): Color {
+    val dark = isSystemInDarkTheme()
+    val soft = LocalGlassStyle.current == GlassStyle.SOFT
+    return if (soft) {
+        if (dark) Color(0xFF0E1420).copy(alpha = 0.80f) else Color.White.copy(alpha = 0.82f)
+    } else {
+        if (dark) Color(0xFF101726).copy(alpha = 0.93f) else Color.White.copy(alpha = 0.94f)
+    }
+}
 
 /**
  * 玻璃表面 Modifier：优先 backdrop 实时折射/模糊；backdrop 为 null（弹窗）时磨砂半透明降级。
@@ -162,10 +174,9 @@ fun Modifier.glassSurface(
                         depthEffect = true,
                     )
                 }
-                // 「透而清」关键：模糊只压高对比噪点（2px 档），绝不能到磨砂的 10px+ 档位；
-                // 清晰度由折射负责。底栏两档清晰度统一 2px（Dev 9c 复盘：柔光 3px/磨砂 2px
-                // 造成"磨砂反而比柔光清晰"的倒挂），柔光更透靠 tint 更薄体现，不靠 blur 差异。
-                blur((if (strong) 2f else if (soft) 2f else 4f).dp.toPx())
+                // 两档玻璃的清晰度分工（Dev 11）：柔光=清玻璃（blur 2px，靠折射看内容）；
+                // 磨砂=真磨砂（卡片 8px 奶雾，底栏 strong 4px 兼顾可读性）
+                blur((if (soft) 2f else if (strong) 4f else 8f).dp.toPx())
             },
             highlight = { Highlight.Default },
             // 参数化柔影（替代已废弃的 View 体系 loopeer/shadow 的思路）：大半径、低浓度、向下偏移
@@ -347,7 +358,7 @@ fun NcTopAppBar(
             actions = actions,
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = Color.Transparent,
-                scrolledContainerColor = glassFillTint(isSystemInDarkTheme()),
+                scrolledContainerColor = glassFillTint(),
             ),
         )
     } else {
@@ -371,7 +382,7 @@ fun NcAlertDialog(
             text = text,
             confirmButton = confirmButton,
             dismissButton = dismissButton,
-            containerColor = glassFillTint(isSystemInDarkTheme()),
+            containerColor = glassFillTint(),
             shape = RoundedRectangle(28.dp, RoundedCornerStyle.Continuous),
         )
     } else {
@@ -395,7 +406,7 @@ fun NcModalBottomSheet(
     if (LocalGlassMode.current) {
         ModalBottomSheet(
             onDismissRequest = onDismissRequest,
-            containerColor = glassFillTint(isSystemInDarkTheme()),
+            containerColor = glassFillTint(),
             content = content,
         )
     } else {
@@ -429,8 +440,8 @@ fun NcOutlinedTextField(
             readOnly = readOnly,
             shape = RoundedRectangle(16.dp, RoundedCornerStyle.Continuous),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = glassFillTint(isSystemInDarkTheme()),
-                unfocusedContainerColor = glassFillTint(isSystemInDarkTheme()),
+                focusedContainerColor = glassFillTint(),
+                unfocusedContainerColor = glassFillTint(),
                 focusedBorderColor = Color.Transparent,
                 unfocusedBorderColor = Color.Transparent,
             ),
@@ -464,7 +475,7 @@ fun NcFilledButton(
             modifier = modifier,
             enabled = enabled,
             colors = ButtonDefaults.buttonColors(
-                containerColor = glassFillTint(isSystemInDarkTheme()),
+                containerColor = glassFillTint(),
                 contentColor = MaterialTheme.colorScheme.primary,
             ),
             content = content,
@@ -488,7 +499,7 @@ fun NcOutlinedButton(
             modifier = modifier,
             enabled = enabled,
             colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = glassFillTint(isSystemInDarkTheme()),
+                containerColor = glassFillTint(),
                 contentColor = MaterialTheme.colorScheme.onSurface,
             ),
             content = content,
