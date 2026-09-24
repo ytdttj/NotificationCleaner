@@ -422,7 +422,17 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
     }
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            // Dev 15：玻璃模式下悬浮底栏位于 Scaffold 之外，会盖住滚到最底部的功能块
+            // → 内容底部让位一个底栏高度（非玻璃模式有 bottomBar，无需让位）
+            .padding(bottom = if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
+                cc.ytdttj.noticleaner.ui.glass.GlassFloatingBarClearance
+            } else {
+                0.dp
+            })
+            .padding(16.dp),
     ) {
         // ---- 界面风格切换（1.4.0 Dev 4）：液态玻璃 / Material 3 ----
         cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {

@@ -18,18 +18,30 @@ import cc.ytdttj.noticleaner.data.db.NotificationEntity
  */
 object LearningHelper {
 
-    /** 批量重学习结果统计 */
-    data class RelearnResult(val adCount: Int, val normalCount: Int, val total: Int)
+    /**
+     * 批量重学习结果统计：
+     * adCount/normalCount = 实际重学条数；skipped = 未学习而跳过的条数（Dev 16）。
+     */
+    data class RelearnResult(
+        val adCount: Int,
+        val normalCount: Int,
+        val total: Int,
+        val skipped: Int,
+    )
 
     /**
-     * 按各自**原有方向**重新学习一批通知（1.4.0 Dev 13：统计明细页「全部学习」）。
+     * 按各自**原有方向**重新学习一批通知中**已学习**的部分（2.0.1 Dev 1 语义修订）。
      *
      * - 已学习为广告 → 再次学习广告（learnCount+1，广告权重**加强**）
      * - 已学习为正常 → 再次学习正常（learnCount+1，广告权重**下调**）
-     * - 尚未学习（如「已过滤」明细里没标注过的）→ 按广告方向学习（与其当前被过滤判定一致）
+     * - **未学习过的条目一律跳过**（v2.0.1 修复：此前默认学为广告——「已过滤」页里
+     *   躺着大量被误拦的正常通知，一键全学为广告会把模型带偏；2.0.0 升级重拟合后
+     *   实测把招行扣款顶回 86% 拦截）
      *
      * 全程只做**一次**重拟合（而非每条一次），避免 N 次 SGD 拟合。
      * learnCount 上限 [SpamTuner.MAX_WEIGHT]，与单条重复学习的惯例一致。
+     *
+     * @return adCount/normalCount 为实际重学条数；skipped 为跳过的未学习条数
      */
     suspend fun relearnAll(
         dao: NotificationDao,
@@ -38,20 +50,25 @@ object LearningHelper {
     ): RelearnResult {
         var ad = 0
         var normal = 0
+        var skipped = 0
         for (n in items) {
-            val label = if (n.learned && n.learnLabel == 0) 0 else 1
-            if (label == 1) ad++ else normal++
+            if (!n.learned) {
+                // 未学习 → 跳过：学习方向必须由用户逐条确认，绝不代填“广告”
+                skipped++
+                continue
+            }
+            if (n.learnLabel == 0) normal++ else ad++
             dao.update(
                 n.copy(
                     learned = true,
-                    learnLabel = label,
+                    learnLabel = n.learnLabel,
                     learnCount = (n.learnCount + 1).coerceAtMost(SpamTuner.MAX_WEIGHT),
-                    decision = if (label == 1) DECISION_MANUAL_MARKED_AD else DECISION_PASSED,
+                    decision = if (n.learnLabel == 1) DECISION_MANUAL_MARKED_AD else DECISION_PASSED,
                 ),
             )
         }
-        refit(dao, modelRepo)
-        return RelearnResult(adCount = ad, normalCount = normal, total = items.size)
+        if (ad + normal > 0) refit(dao, modelRepo)
+        return RelearnResult(adCount = ad, normalCount = normal, total = items.size, skipped = skipped)
     }
 
     /**

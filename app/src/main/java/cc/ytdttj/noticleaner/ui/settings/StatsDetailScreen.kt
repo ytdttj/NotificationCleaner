@@ -146,22 +146,28 @@ class StatsDetailViewModel(
     }
 
     /**
-     * 按各通知**原有方向**重新学习（广告→广告加强，正常→正常加强），
-     * 未学习过的按广告方向学习；整体只做一次全量重拟合。
+     * 按各通知**原有方向**重新学习（广告→广告加强，正常→正常加强）。
+     * 2.0.1 Dev 1：**未学习过的条目直接跳过**（不再默认学为广告——
+     * 已过滤页躺着大量被误拦的正常通知，默认学广告会把模型带偏）。
      */
     fun relearnAll(items: List<NotificationEntity>) {
         if (items.isEmpty() || _busy.value) return
         viewModelScope.launch(Dispatchers.Default) {
             _busy.value = true
-            _toast.value = "正在重新学习 ${items.size} 条通知…"
+            _toast.value = "正在重新学习…"
             val result = runCatching {
                 cc.ytdttj.noticleaner.data.LearningHelper.relearnAll(dao, modelRepo, items)
             }.getOrNull()
             _busy.value = false
             _toast.value = if (result == null) {
                 "批量学习失败，请重试"
+            } else if (result.adCount + result.normalCount == 0) {
+                "没有已学习的条目可重学；未学习的请逐条打开详情选择方向"
             } else {
-                "已重新学习 ${result.total} 条：广告 ${result.adCount} 条 / 正常 ${result.normalCount} 条"
+                buildString {
+                    append("已重新学习 ${result.adCount + result.normalCount} 条：广告 ${result.adCount} / 正常 ${result.normalCount}")
+                    if (result.skipped > 0) append("；已跳过未学习 ${result.skipped} 条")
+                }
             }
         }
     }
@@ -196,27 +202,31 @@ fun StatsDetailScreen(
             vm.clearToast()
         }
     }
+    // 2.0.1 Dev 1：「全部学习」只作用于**已学习**条目，未学习项跳过不再代填“广告”
     val normalCount = items.count { it.learned && it.learnLabel == 0 }
-    val adCount = items.size - normalCount
+    val adCount = items.count { it.learned && it.learnLabel == 1 }
+    val learnedCount = normalCount + adCount
+    val unlearnedCount = items.size - learnedCount
 
     if (confirmAll) {
         cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
             onDismissRequest = { confirmAll = false },
-            title = { Text("重新学习这 ${items.size} 条通知？") },
+            title = { Text("重新学习 $learnedCount 条已学习通知？") },
             text = {
                 Text(
-                    "按每条通知原有的学习方向再次学习：\n" +
-                        "• 已学习为广告 $adCount 条 → 再学一次广告（广告权重加强）\n" +
-                        "• 已学习为正常 $normalCount 条 → 再学一次正常（广告权重下调）\n" +
-                        "• 未学习过的按广告方向学习\n\n" +
+                    "⚠️ 只会重新学习已有标注的条目，未学习的 $unlearnedCount 条将被跳过\n\n" +
+                        "· 已学习为广告 $adCount 条 → 再学一次广告（广告权重加强）\n" +
+                        "· 已学习为正常 $normalCount 条 → 再学一次正常（广告权重下调）\n\n" +
+                        "⚠️ 未学习过的通知不会被自动标为广告；\n若想把某条误拦通知改成正常，请逐条点开详情后手动选择。\n\n" +
                         "学习后模型会立即重新拟合。",
+                    style = MaterialTheme.typography.bodySmall,
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirmAll = false
                     vm.relearnAll(items)
-                }) { Text("开始学习") }
+                }, enabled = learnedCount > 0) { Text("开始学习") }
             },
             dismissButton = {
                 TextButton(onClick = { confirmAll = false }) { Text("取消") }
@@ -244,7 +254,8 @@ fun StatsDetailScreen(
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
                 },
                 actions = {
-                    if (items.isNotEmpty()) {
+                    // 2.0.1 Dev 1：只在列表里确有已学习条目时才显示（未学习项不再代填方向）
+                    if (learnedCount > 0) {
                         TextButton(onClick = { confirmAll = true }, enabled = !busy) {
                             Text(if (busy) "学习中…" else "全部学习")
                         }
