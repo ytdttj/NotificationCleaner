@@ -2,5 +2,5 @@
   "versionCode": 55,
   "versionName": "2.0.1 Dev 5",
   "notes": "2.0.1 Dev 5 发布（versionCode 55）——上岛链路重构，模拟上岛真机验证通过\n\n【重构】上岛代码（仅保留 LSPosed 模式）\n· 删除 iptables DROP 盲窗方案——OS3 云认证 fail-closed 真机实测无效，整体废弃\n· 同 id 岛通知先 cancel 再 notify：修复 60 秒超时窗内连续上岛因\n  「更新已有通知」不触发岛展示的问题\n· 常规路径上岛通知栏完全无痕（VISIBILITY_SECRET）；模拟/测试路径通知栏留痕，便于判别认证拒绝\n· 认证放行完全依赖模块端 hook：SystemUI 白名单/签名 + xmsf 云认证（HyperIsland 同款机制）\n\n【修复】LSPosed 激活检测误报\"未激活\"\n· 新增 system_server 心跳铁证：模块 hook 成功后经 ModuleLogProvider 回写\n· 检测不到证据时显示「无法自动检测（以 LSPosed 管理器为准）」，不再误报\n· 装上本版后请重启手机一次，心跳即生成\n\n【新增】高级功能\"重启岛作用域\"（Root）\n· 一键重启 系统界面 + 小米服务框架，改作用域/更新模块后岛 hook 立即生效，免整机重启",
-  "sha256": "cc3f6d9a1ea4e684cad1477a4fdc31eff5d0d7c010d38575929bf07e1bcbf32c"
+  "sha256": "E3340320AE28EE7524A6A828DFC10845E4D06B015C9FC9BDE73287F0D02E09D6"
 }
