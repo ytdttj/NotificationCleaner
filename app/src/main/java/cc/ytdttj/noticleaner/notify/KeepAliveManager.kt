@@ -232,6 +232,23 @@ object ListenerRepair {
         executor.exec(put)
         sb.appendLine("$ cmd notification allow_listener $SVC")
         sb.appendLine(executor.exec("cmd notification allow_listener $SVC"))
+
+        // 2.0.1 Dev 3：系统侧诊断——M332BF/Android 17 上设置写回成功但系统始终不绑定
+        // （listener onCreate 出现 0 次），且导出日志只含应用自身 tag，看不到 NMS 视角。
+        // 抓取 NMS 对监听器的真实视图（requested/live/snoozed）与包状态，随修复日志落盘。
+        runCatching {
+            sb.appendLine("---- 系统侧诊断（dumpsys notification 过滤） ----")
+            val dump = executor.exec(
+                "dumpsys notification | grep -iE \"listener|ManagedServices\" | grep -iE \"noticleaner|requested|live|snoozed|disabled|ManagedServices:\" | head -n 60",
+            )
+            sb.appendLine(dump.ifBlank { "(dumpsys 无匹配行)" })
+            val pkg = executor.exec(
+                "dumpsys package cc.ytdttj.noticleaner | grep -iE \"versionName|enabled=|stopped=|installerPackageName\" | head -n 8",
+            )
+            sb.appendLine("---- 包状态 ----").appendLine(pkg.ifBlank { "(无输出)" })
+        }.onFailure {
+            sb.appendLine("系统侧诊断失败: $it")
+        }
         return sb.toString().trim()
     }
 }

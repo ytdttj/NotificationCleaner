@@ -128,6 +128,12 @@ class WatchdogReceiver : BroadcastReceiver() {
                         runCatching {
                             val log = ListenerRepair.repair(ShizukuExecutor)
                             Log.i(TAG, "listener repair done:\n$log")
+                            // 2.0.1 Dev 3：系统侧诊断段进环形日志（导出可见，logcat 易滚动）
+                            val diag = log.substringAfter("---- 系统侧诊断", "")
+                            if (diag.isNotBlank()) {
+                                val trimmed = diag.lineSequence().take(45).joinToString("\n")
+                                cc.ytdttj.noticleaner.diagnostics.RingLog.log("系统侧诊断\n$trimmed")
+                            }
                             cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                                 "看门狗：Shizuku 修复完成 → ${log.lineSequence().firstOrNull()?.take(80)}",
                             )
