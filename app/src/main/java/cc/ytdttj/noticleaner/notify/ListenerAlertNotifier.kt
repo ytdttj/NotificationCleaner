@@ -43,8 +43,11 @@ object ListenerAlertNotifier {
         }
     }
 
-    /** 监听失效提醒；冷却期内不重复弹 */
-    fun notifyDown(context: Context, reason: String) {
+    /**
+     * 监听失效提醒；冷却期内不重复弹。
+     * @param escalate 连续多次修复无效时升级为"建议重启手机"（系统放弃重绑只有重启能复位）
+     */
+    fun notifyDown(context: Context, reason: String, escalate: Boolean = false) {
         val app = context.applicationContext
         ensureChannel(app)
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -74,12 +77,24 @@ object ListenerAlertNotifier {
         val notif = Notification.Builder(app, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_alert)
             .setContentTitle("通知监听已失效")
-            .setContentText("广告净化暂时停止（$reason），点「立即修复」恢复")
-            .setStyle(Notification.BigTextStyle().bigText(
-                "通知监听已失效（$reason）。\n广告净化暂时停止，恢复前新通知不会被过滤。\n" +
-                    "• 有 Shizuku/Root：点「立即修复」自动摘除写回强制重绑\n" +
-                    "• 普通用户：点「权限设置」，取消勾选本应用后重新勾选",
-            ))
+            .setContentText(
+                if (escalate) "多次自动修复无效（$reason），建议重启手机后重新打开本应用"
+                else "广告净化暂时停止（$reason），点「立即修复」恢复",
+            )
+            .setStyle(
+                Notification.BigTextStyle().bigText(
+                    if (escalate) {
+                        "通知监听已失效（$reason），且多次自动修复无效。\n" +
+                            "这通常是系统在监听服务反复崩溃后放弃了重绑，\n只有重启手机才能复位该状态。\n" +
+                            "· 请重启手机后重新打开本应用\n" +
+                            "· 重启后如再失效，请导出诊断日志反馈"
+                    } else {
+                        "通知监听已失效（$reason）。\n广告净化暂时停止，恢复前新通知不会被过滤。\n" +
+                            "• 有 Shizuku/Root：点「立即修复」自动摘除写回强制重绑\n" +
+                            "• 普通用户：点「权限设置」，取消勾选本应用后重新勾选"
+                    },
+                ),
+            )
             // 锁屏完整显示
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setCategory(Notification.CATEGORY_STATUS)

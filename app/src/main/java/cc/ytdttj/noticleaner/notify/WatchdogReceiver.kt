@@ -97,8 +97,14 @@ class WatchdogReceiver : BroadcastReceiver() {
             CleanerListenerService.requestRebindIfEnabled(context)
             Log.i(TAG, "rebind requested")
             // Dev 15：看门狗发现"权限在、连接不在"→ 发失效提醒（内部 30 分钟冷却，不会刷屏）
+            // 2.0.1 Dev 3：连续 ≥10 次（约 5 分钟）仍断连 → 升级提醒为"建议重启手机"
+            // （系统在监听服务反复崩溃后会放弃重绑，只有重启能复位——M332BF 实测）
             runCatching {
-                ListenerAlertNotifier.notifyDown(context, "监听未连接，看门狗已尝试重绑")
+                ListenerAlertNotifier.notifyDown(
+                    context,
+                    "监听未连接，看门狗已尝试重绑",
+                    escalate = consecutiveDisconnected + 1 >= 10,
+                )
             }
             cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                 "✗ 看门狗：监听断连 → 请求重绑（连续第 ${consecutiveDisconnected + 1} 次）",
