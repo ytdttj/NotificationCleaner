@@ -117,6 +117,31 @@ class LspEntry : XposedModule() {
             hook(target).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(NmsBlockHooker(engine, sink))
             log(Log.INFO, TAG, "NMS enqueueNotificationInternal hooked (${target.parameterCount} params)")
+            // Dev 5：模块激活心跳——hook 成功即模块真实在跑，经 ModuleLogProvider
+            // 回写偏好文件（decision=LSP_ALIVE），App 端 KeepAliveManager 以此作激活铁证。
+            // （原实现读 Settings.Secure enabled_xposed_modules，新版 LSPosed 上 key
+            //  缺失/格式漂移导致"已激活却显示未激活"。）
+            runCatching {
+                val sysCtx = Class.forName("android.app.ActivityThread")
+                    .getMethod("systemMain").invoke(null)?.let { at ->
+                        at.javaClass.getMethod("getSystemContext").invoke(at) as android.content.Context
+                    }
+                if (sysCtx != null) {
+                    val hb = android.content.ContentValues().apply {
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_PACKAGE, TARGET)
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_CHANNEL, "")
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_TITLE, "system_server NMS hook OK")
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_CONTENT, "")
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_POST_TIME, System.currentTimeMillis())
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_PROBABILITY, 0f)
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_DECISION,
+                            cc.ytdttj.noticleaner.provider.ModuleLogProvider.LSP_ALIVE_DECISION)
+                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_KEY, "lsp:heartbeat")
+                    }
+                    sink.submit(sysCtx, hb)
+                    log(Log.INFO, TAG, "LSP heartbeat submitted via ModuleLogProvider")
+                }
+            }.onFailure { log(Log.WARN, TAG, "heartbeat submit failed: $it") }
         } catch (t: Throwable) {
             log(Log.WARN, TAG, "NMS hook failed: $t")
         }

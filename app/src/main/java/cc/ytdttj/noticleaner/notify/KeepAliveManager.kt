@@ -39,17 +39,39 @@ class KeepAliveManager(private val context: Context) {
     }
 
     /**
-     * LSPosed 模块激活检测（1.3.0 beta2 修复"LSPosed 一直不可用"）：
-     * LSPosed 启用模块时会把模块写入 Settings.Secure.enabled_xposed_modules。
-     * - true/false：设备有 LSPosed，本模块已启用/未启用
-     * - null：无 LSPosed（或未授予读取），无法检测
+     * LSPosed 模块激活检测（Dev 5 重构：原实现只读 Settings.Secure
+     * "enabled_xposed_modules"，新版 LSPosed/ROM 上该 key 不存在或格式漂移，
+     * 导致"已激活却显示未激活"——激活状态被误报为 false）。
+     *
+     * 证据链（按可靠度）：
+     * 1. 运行时铁证：模块在 system_server 内 hook 成功后，经 ModuleLogProvider
+     *    回写心跳（keepalive/LspEntry → lsp_heartbeat 偏好文件）。有心跳 = 模块真实在跑。
+     * 2. Settings.Secure 多 key 兜底："enabled_xposed_modules"（LSPosed 传统）/
+     *    "active_xposed_modules"，冒号分隔包名列表。
+     * 3. 都拿不到证据 → null（无法检测），**绝不返回 false**——
+     *    检测不到 ≠ 未激活（本次 bug 根因）。
      */
-    fun isLspActive(): Boolean? = runCatching {
-        val raw = android.provider.Settings.Secure.getString(
-            context.contentResolver, "enabled_xposed_modules",
-        ) ?: return@runCatching null
-        raw.split(":").any { it.contains(context.packageName) }
-    }.getOrNull()
+    fun isLspActive(): Boolean? {
+        // 证据 1：system_server 心跳
+        runCatching {
+            if (context.getSharedPreferences("lsp_heartbeat", Context.MODE_PRIVATE)
+                    .getLong("last_alive", 0L) > 0L
+            ) return true
+        }
+        // 证据 2：Settings.Secure 模块列表
+        runCatching {
+            for (key in listOf("enabled_xposed_modules", "active_xposed_modules")) {
+                val raw = android.provider.Settings.Secure.getString(context.contentResolver, key)
+                    ?.trim().orEmpty()
+                if (raw.isEmpty()) continue
+                if (raw.split(":").any {
+                        it.equals(context.packageName, ignoreCase = true) || it.contains(context.packageName)
+                    }
+                ) return true
+            }
+        }
+        return null
+    }
 
     /** 探测 Root（su 可执行；快速超时，需在 IO 线程调用） */
     fun isRootAvailable(): Boolean = runCatching {

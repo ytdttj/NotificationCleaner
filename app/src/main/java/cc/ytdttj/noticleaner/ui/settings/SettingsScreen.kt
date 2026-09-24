@@ -70,10 +70,9 @@ class SettingsViewModel(
     val filteredCount = dao.filteredCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val learnedCount = dao.learnedCount().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
-    // ---- 超级岛（island 分支功能）----
+    // ---- 超级岛（island 分支功能；Dev 5 重构：LSPosed only）----
     val islandEnabled = settings.islandEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val islandPackages = settings.islandPackages.stateIn(viewModelScope, SharingStarted.Eagerly, cc.ytdttj.noticleaner.notify.island.IslandNotifier.DEFAULT_PACKAGES)
-    val islandDropBlind = settings.islandDropBlind.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     /** 岛探测状态（实时刷新：保活动作完成后自动重新探测） */
     private val _islandProbe = MutableStateFlow("探测系统支持中…")
@@ -166,8 +165,8 @@ class SettingsViewModel(
             }
             val lspLine = when (lsp) {
                 true -> "LSPosed：模块已激活"
-                false -> "LSPosed：模块未激活"
-                null -> "LSPosed：未安装或无法检测"
+                // Dev 5：检测不到证据 ≠ 未激活（原实现误报），如实显示"无法自动检测"
+                else -> "LSPosed：无法自动检测（以 LSPosed 管理器为准）"
             }
             val shizukuLine = if (shizukuOk) "Shizuku：已授权" else "Shizuku：未授权"
             _islandProbe.value = listOf(osLine, hookLine, lspLine, shizukuLine).joinToString("\n")
@@ -192,10 +191,6 @@ class SettingsViewModel(
         viewModelScope.launch { settings.setIslandEnabled(v) }
     }
 
-    fun setIslandDropBlind(v: Boolean) {
-        viewModelScope.launch { settings.setIslandDropBlind(v) }
-    }
-
     fun toggleIslandPackage(pkg: String) {
         viewModelScope.launch {
             val current = islandPackages.value
@@ -204,7 +199,7 @@ class SettingsViewModel(
         }
     }
 
-    /** 发送测试岛通知（走完整盲窗链路） */
+    /** 发送测试岛通知（走完整 LSPosed 链路） */
     fun sendTestIsland() {
         cc.ytdttj.noticleaner.notify.island.IslandNotifier.sendTest(ServiceLocator.appContext) { msg ->
             _toast.value = msg
@@ -218,10 +213,6 @@ class SettingsViewModel(
 
     fun simulateNotification(pkg: String, title: String, content: String) {
         if (_simulateBusy.value) return
-        if (!cc.ytdttj.noticleaner.notify.island.IslandBypassExecutor.isReady()) {
-            _toast.value = "Shizuku 未授权：模拟发送需要 Shizuku"
-            return
-        }
         if (title.isBlank() && content.isBlank()) {
             _toast.value = "标题和内容不能同时为空"
             return
@@ -371,6 +362,34 @@ class SettingsViewModel(
         viewModelScope.launch {
             _execBusy.value = true
             _execResult.value = runKeepAliveCommands(ServiceLocator.appContext, RootExecutor) { }
+            _execBusy.value = false
+            refreshKeepAlive()
+        }
+    }
+
+    /**
+     * 重启岛作用域进程（Dev 5，Root；命令参考 ref/HyperIsland RestartScopeDialog）：
+     * - SystemUI：killall（persistent 进程对 force-stop 不响应），死后由 zygote 自动拉起；
+     * - 小米服务框架：am force-stop，被小米推送自行重新拉起。
+     * LSPosed hook 修改作用域/更新模块后，重启对应进程即可让 hook 生效，无需整机重启。
+     */
+    fun restartIslandScope() {
+        if (_execBusy.value) return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _execBusy.value = true
+            val commands = listOf(
+                "killall com.android.systemui",
+                "am force-stop com.xiaomi.xmsf",
+            )
+            _execResult.value = buildString {
+                for (cmd in commands) {
+                    val out = runCatching { RootExecutor.exec(cmd) }.getOrElse { "执行失败: $it" }
+                    append("$ ").appendLine(cmd)
+                    append(if (out.isBlank()) "(无输出)" else out).appendLine().appendLine()
+                }
+                appendLine("两条命令执行完毕。SystemUI 与小米服务框架正在自动重启，")
+                append("约 10–20 秒后锁屏/岛恢复即可测试上岛。")
+            }.trim()
             _execBusy.value = false
             refreshKeepAlive()
         }
@@ -610,10 +629,21 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     )
                     AdvancedRow(
                         label = "LSPosed 保活",
-                        desc = "安装 LSPosed 并激活本模块（作用域勾选「系统(android)」）后自动生效，重启手机完成",
+                        desc = "安装 LSPosed 并激活本模块（作用域勾选「系统(android)」）后自动生效，重启手机完成。" +
+                            "未打勾 = 未检测到激活证据（模块心跳或系统模块列表），以 LSPosed 管理器为准",
                         ok = keepAlive.lspDetected == true,
                         actionLabel = null,
                         onAction = {},
+                    )
+                    AdvancedRow(
+                        label = "重启岛作用域",
+                        desc = "以 Root 重启 系统界面 + 小米服务框架：更新模块或修改 LSPosed 作用域后让岛 hook 立即生效，无需整机重启",
+                        ok = keepAlive.rootAvailable,
+                        actionLabel = if (keepAlive.rootAvailable) "重启" else null,
+                        onAction = {
+                            if (keepAlive.rootAvailable) vm.restartIslandScope()
+                            else vm.showToast("重启作用域需要 Root（su）")
+                        },
                     )
                     AdvancedRow(
                         label = "无障碍保活",
@@ -763,17 +793,18 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(12.dp))
-        // ---- 超级岛支付提醒（island 分支实验功能） ----
+        // ---- 超级岛支付提醒（island 分支实验功能；Dev 5 重构：LSPosed only） ----
         val islandEnabled by vm.islandEnabled.collectAsState()
         val islandPackages by vm.islandPackages.collectAsState()
-        val islandDropBlind by vm.islandDropBlind.collectAsState()
         var showDiag by remember { mutableStateOf(false) }
         cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("超级岛支付提醒（实验）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "银行/支付类 App 的收支通知自动上岛：摘要态显示来源图标与金额，展开显示详情。仅 HyperOS 3 + Shizuku 生效，失败自动退化为普通通知。",
+                    "银行/支付类 App 的收支通知自动上岛：摘要态显示来源图标与金额，展开显示详情。" +
+                        "认证放行依赖 LSPosed 模块（需在 LSPosed 中启用本模块并勾选" +
+                        "系统界面 + 小米服务框架作用域），失败自动退化为普通通知。",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(8.dp))
@@ -796,19 +827,6 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                         )
                         Text(label, style = MaterialTheme.typography.bodyMedium)
                     }
-                }
-                Spacer(Modifier.height(8.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("免 LSPosed 模式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "iptables DROP 盲窗放行认证（需 Root，不需要 LSPosed 模块）。关闭时走 xmsf hook。两者互不冲突。",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Switch(checked = islandDropBlind, onCheckedChange = { vm.setIslandDropBlind(it) })
                 }
                 Spacer(Modifier.height(8.dp))
                 Row {

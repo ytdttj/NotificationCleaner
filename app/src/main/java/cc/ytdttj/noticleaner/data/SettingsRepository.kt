@@ -30,10 +30,10 @@ class SettingsRepository(private val context: Context) {
     private val keyOnboardingDone = booleanPreferencesKey("onboarding_done")
 
     // ---- 超级岛（island 分支功能，islandplan.md §四）----
+    // Dev 5 重构：删除 island_bypass_ms / island_drop_blind（iptables 盲窗方案废弃，
+    // 仅保留 LSPosed 模式）。旧 key 残留在 DataStore 中无害，不做迁移。
     private val keyIslandEnabled = booleanPreferencesKey("island_enabled")
     private val keyIslandPackages = stringSetPreferencesKey("island_packages")
-    private val keyIslandBypassMs = intPreferencesKey("island_bypass_ms")
-    private val keyIslandDropBlind = booleanPreferencesKey("island_drop_blind")
 
     // ---- 1.2.0（ImprovePlan P2-2）：拦截计数内存累积 + 500ms 批量落盘 ----
     // 拦截风暴（一次弹 N 条广告）时不再逐条全文件读改写 DataStore。
@@ -79,21 +79,12 @@ class SettingsRepository(private val context: Context) {
         val saved = prefs[keyIslandPackages] ?: return@map IslandNotifier.DEFAULT_PACKAGES
         saved.map { IslandNotifier.PACKAGE_MIGRATION[it] ?: it }.toSet()
     }
-    val islandBypassMs: Flow<Int> = context.dataStore.data.map { it[keyIslandBypassMs] ?: 100 }
-
-    /** 免 LSPosed 模式：iptables DROP 盲窗（需 Root），关闭时走 xmsf auth hook */
-    val islandDropBlind: Flow<Boolean> = context.dataStore.data.map { it[keyIslandDropBlind] ?: false }
-
     suspend fun setIslandEnabled(value: Boolean) {
         context.dataStore.edit { it[keyIslandEnabled] = value }
     }
 
     suspend fun setIslandPackages(value: Set<String>) {
         context.dataStore.edit { it[keyIslandPackages] = value }
-    }
-
-    suspend fun setIslandDropBlind(value: Boolean) {
-        context.dataStore.edit { it[keyIslandDropBlind] = value }
     }
 
     /** 通知模拟解锁（隐藏测试功能：设置 tab 快速点击 5 次后启用，1.3.0 beta2） */

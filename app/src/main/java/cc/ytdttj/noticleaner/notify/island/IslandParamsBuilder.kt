@@ -196,6 +196,12 @@ object IslandParamsBuilder {
             .setContentText(payment.capsuleText.trim())
             .setOngoing(false)
             .setAutoCancel(true)
+            // Dev 5（借鉴 ref/HyperIsland）：常规路径通知栏完全无痕（岛照常展示）；
+            // 测试路径 PRIVATE 留痕，判别认证拒绝
+            .setVisibility(
+                if (showNotification) Notification.VISIBILITY_PRIVATE
+                else Notification.VISIBILITY_SECRET,
+            )
             .addExtras(extras)
         contentIntent?.let { builder.setContentIntent(it) }
         return builder.build()

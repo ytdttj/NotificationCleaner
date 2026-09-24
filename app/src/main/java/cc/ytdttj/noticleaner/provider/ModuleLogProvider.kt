@@ -28,6 +28,19 @@ class ModuleLogProvider : ContentProvider() {
         values ?: return null
         val ctx = context ?: return null
 
+        // Dev 5：LSPosed 模块心跳（decision=LSP_ALIVE）——不入历史库，
+        // 写独立偏好文件供 KeepAliveManager.isLspActive() 作"模块真实在跑"的铁证
+        if (values.getAsString(COL_DECISION) == LSP_ALIVE_DECISION) {
+            runCatching {
+                ctx.getSharedPreferences(LSP_HEARTBEAT_PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong("last_alive", values.getAsLong(COL_POST_TIME) ?: System.currentTimeMillis())
+                    .putString("last_process", values.getAsString(COL_TITLE).orEmpty())
+                    .apply()
+            }
+            return null
+        }
+
         val entity = NotificationEntity(
             packageName = values.getAsString(COL_PACKAGE).orEmpty(),
             appName = appName(ctx, values.getAsString(COL_PACKAGE).orEmpty()),
@@ -75,6 +88,10 @@ class ModuleLogProvider : ContentProvider() {
     companion object {
         const val AUTHORITY = "cc.ytdttj.noticleaner.modulelog"
         val CONTENT_URI: Uri = Uri.parse("content://$AUTHORITY/log")
+
+        /** Dev 5：模块心跳决策标记（system_server 内 hook 成功后回写，不入库） */
+        const val LSP_ALIVE_DECISION = "LSP_ALIVE"
+        const val LSP_HEARTBEAT_PREFS = "lsp_heartbeat"
 
         const val COL_PACKAGE = "package"
         const val COL_CHANNEL = "channel"

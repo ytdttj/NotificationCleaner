@@ -131,22 +131,14 @@ class CleanerListenerService : NotificationListenerService() {
                             }
                     }
                 }
-                // island 分支：超级岛设置热路径缓存（islandplan.md §三）
+                // island 分支：超级岛设置热路径缓存（islandplan.md §三；Dev 5 LSPosed-only）
                 appScope!!.launch {
                     val s = ServiceLocator.settings
                     kotlinx.coroutines.flow.combine(
                         s.islandEnabled,
                         s.islandPackages,
-                        s.islandBypassMs,
-                        s.islandDropBlind,
-                    ) { e, p, b, d -> listOf(e, p, b, d) }.collect { l ->
-                        @Suppress("UNCHECKED_CAST")
-                        cc.ytdttj.noticleaner.notify.island.IslandNotifier.onSettings(
-                            l[0] as Boolean,
-                            l[1] as Set<String>,
-                            (l[2] as Int).toLong(),
-                            l[3] as Boolean,
-                        )
+                    ) { e, p -> e to p }.collect { (e, p) ->
+                        cc.ytdttj.noticleaner.notify.island.IslandNotifier.onSettings(e, p)
                     }
                 }
             }
