@@ -74,6 +74,10 @@ class WatchdogReceiver : BroadcastReceiver() {
         if (enabled && !connected) {
             CleanerListenerService.requestRebindIfEnabled(context)
             Log.i(TAG, "rebind requested")
+            // Dev 15：看门狗发现"权限在、连接不在"→ 发失效提醒（内部 30 分钟冷却，不会刷屏）
+            runCatching {
+                ListenerAlertNotifier.notifyDown(context, "监听未连接，看门狗已尝试重绑")
+            }
             cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                 "✗ 看门狗：监听断连 → 请求重绑（连续第 $consecutiveDisconnected+1 次）",
             )

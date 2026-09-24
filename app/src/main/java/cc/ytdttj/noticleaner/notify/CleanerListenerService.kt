@@ -205,6 +205,8 @@ class CleanerListenerService : NotificationListenerService() {
             keys.forEach { runCatching { cancelNotification(it) } }
             android.util.Log.i("NCWatch", "pendingCancels flushed: ${keys.size}")
         }
+        // 1.4.0 Dev 15：监听恢复 → 撤下"监听已失效"提醒
+        runCatching { ListenerAlertNotifier.cancel(this) }
         // 追溯处理：监听断线期间弹出的通知不会触发回调，重连后扫一遍通知栏补处理（1.1.8）
         // 1.2.1：补扫走独立慢速通道（backfillDispatcher），不与实时通知抢并发
         runCatching {
@@ -220,6 +222,10 @@ class CleanerListenerService : NotificationListenerService() {
         listenerConnected = false
         android.util.Log.w("NCWatch", "listener DISCONNECTED — requesting rebind")
         cc.ytdttj.noticleaner.diagnostics.RingLog.log("✗ 监听断线 → 请求重绑")
+        // 1.4.0 Dev 15：断线即发提醒（悬浮 + 锁屏可见），仅在权限仍授予时提醒
+        runCatching {
+            if (isListenerEnabled(this)) ListenerAlertNotifier.notifyDown(this, "监听连接已断开")
+        }
         // 监听断线（进程被杀后系统回收绑定）→ 自愈重绑（Plan.md §7.1）
         requestRebindCompat(this)
         super.onListenerDisconnected()

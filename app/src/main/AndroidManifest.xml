@@ -91,6 +91,27 @@
             android:name=".notify.island.IslandDismissReceiver"
             android:exported="false" />
 
+        <!-- 1.4.0 Dev 15：监听失效提醒的按钮动作（修复/权限设置），仅本应用 PendingIntent -->
+        <receiver
+            android:name=".notify.ListenerRepairActionReceiver"
+            android:exported="false" />
+
+        <!-- 1.4.0 Dev 15：控制中心磁贴——一键修复通知监听 -->
+        <service
+            android:name=".notify.ListenerRepairTileService"
+            android:exported="true"
+            android:label="通知监听修复"
+            android:icon="@drawable/ic_stat_alert"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <!-- ACTIVE_TILE：展开面板即回调 onStartListening，状态实时 -->
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
+        </service>
+
         <!-- 1.2.1：无障碍保活层（可选）：系统绑定的第二条生命线，空实现不读窗口内容 -->
         <service
             android:name=".notify.NotiGuardService"
