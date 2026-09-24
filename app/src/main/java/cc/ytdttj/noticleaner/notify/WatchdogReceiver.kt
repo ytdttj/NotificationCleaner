@@ -71,6 +71,28 @@ class WatchdogReceiver : BroadcastReceiver() {
         // 1.4.0 Dev 12：环形留痕（心跳 30s/次，相邻相同自动折叠为 ×N 摘要，不刷爆配额）
         cc.ytdttj.noticleaner.diagnostics.RingLog.log("看门狗心跳 enabled=$enabled connected=$connected")
 
+        // ── 2.0.1 Dev 2 重构（修复崩溃死循环）────────────────────────────────────
+        // 旧实现：Shizuku 修复分支和 purgeExpired 各调一次 goAsync —— BroadcastReceiver
+        // 的 goAsync 只能调一次，第二次返回的 PendingResult 为 null → finish() NPE →
+        // 进程 FATAL。实测（M332BF / Android 17）：断连 + Shizuku 可用时每 30s 崩一次，
+        // 修复协程每次都被崩溃杀掉 → 监听永远修不好 → 无限崩溃-重启循环。
+        // 新实现：
+        //   1. 自续约 schedule() 前置——后面任何异常都不断闹钟链
+        //   2. goAsync 全程只调一次，修复与清理合并进同一个协程
+        //   3. 整个 onReceive 兜底 runCatching，绝不向上抛
+        schedule(context)
+
+        val pending: android.content.BroadcastReceiver.PendingResult? = try {
+            goAsync()
+        } catch (t: Throwable) {
+            Log.w(TAG, "goAsync failed: $t")
+            null
+        }
+
+        fun finishSafely() {
+            runCatching { pending?.finish() }
+        }
+
         if (enabled && !connected) {
             CleanerListenerService.requestRebindIfEnabled(context)
             Log.i(TAG, "rebind requested")
@@ -79,63 +101,62 @@ class WatchdogReceiver : BroadcastReceiver() {
                 ListenerAlertNotifier.notifyDown(context, "监听未连接，看门狗已尝试重绑")
             }
             cc.ytdttj.noticleaner.diagnostics.RingLog.log(
-                "✗ 看门狗：监听断连 → 请求重绑（连续第 $consecutiveDisconnected+1 次）",
+                "✗ 看门狗：监听断连 → 请求重绑（连续第 ${consecutiveDisconnected + 1} 次）",
             )
             // 1.1.14：尝试重启保活前台服务——恢复进程重要性并抖掉可能卡死的绑定
             // （受 FGS 后台启动限制时抛异常，忽略：重绑请求已发出）
             runCatching { KeepAliveService.start(context) }
                 .onFailure { Log.w(TAG, "fgs restart rejected: $it") }
-            // 1.2.1：连续 2 次触发仍断连 → Shizuku 可用时做"摘除写回"强制重绑（30 分钟节流；
-            // 仅 Shizuku——Root 后台自动执行会弹 su 授权打扰用户，Root 修复走设置页手动按钮）
             consecutiveDisconnected++
             val now = SystemClock.elapsedRealtime()
-            if (consecutiveDisconnected >= 2 && now - lastRepairAt > REPAIR_THROTTLE_MS) {
-                val shizukuUsable = runCatching {
-                    rikka.shizuku.Shizuku.pingBinder() &&
-                        rikka.shizuku.Shizuku.checkSelfPermission() ==
-                        android.content.pm.PackageManager.PERMISSION_GRANTED
-                }.getOrDefault(false)
-                if (shizukuUsable) {
-                    lastRepairAt = now
-                    consecutiveDisconnected = 0
-                    Log.i(TAG, "listener still disconnected → shizuku listener repair")
-                    cc.ytdttj.noticleaner.diagnostics.RingLog.log("看门狗：Shizuku 强制修复监听")
-                    val result = goAsync()
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                        try {
+            val needRepair = consecutiveDisconnected >= 2 &&
+                now - lastRepairAt > REPAIR_THROTTLE_MS
+            val shizukuUsable = needRepair && runCatching {
+                rikka.shizuku.Shizuku.pingBinder() &&
+                    rikka.shizuku.Shizuku.checkSelfPermission() ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+            }.getOrDefault(false)
+            if (shizukuUsable) {
+                lastRepairAt = now
+                consecutiveDisconnected = 0
+                Log.i(TAG, "listener still disconnected → shizuku listener repair")
+                cc.ytdttj.noticleaner.diagnostics.RingLog.log("看门狗：Shizuku 强制修复监听")
+            }
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    if (shizukuUsable) {
+                        runCatching {
                             val log = ListenerRepair.repair(ShizukuExecutor)
                             Log.i(TAG, "listener repair done:\n$log")
                             cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                                 "看门狗：Shizuku 修复完成 → ${log.lineSequence().firstOrNull()?.take(80)}",
                             )
-                        } catch (t: Throwable) {
+                        }.onFailure { t ->
                             Log.w(TAG, "listener repair failed: $t")
                             cc.ytdttj.noticleaner.diagnostics.RingLog.log("✗ 看门狗：Shizuku 修复失败 $t")
-                        } finally {
-                            result.finish()
                         }
                     }
+                    // 1.2.0（ImprovePlan P0-2）：顺带清理过期通知
+                    runCatching {
+                        cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao()
+                            .purgeExpired(System.currentTimeMillis())
+                    }.onFailure { Log.w(TAG, "purgeExpired failed: $it") }
+                } finally {
+                    finishSafely()
                 }
             }
         } else {
             consecutiveDisconnected = 0
-        }
-
-        // 1.2.0（ImprovePlan P0-2）：顺带清理过期通知——闹钟 9 分钟天然节流 + Doze 免疫，
-        // 修复长驻进程下 purgeExpired 只在服务 onCreate 执行一次导致的 DB 无限膨胀
-        val result = goAsync()
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            try {
-                runCatching {
-                    cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao()
-                        .purgeExpired(System.currentTimeMillis())
-                }.onFailure { Log.w(TAG, "purgeExpired failed: $it") }
-            } finally {
-                result.finish()
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    runCatching {
+                        cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao()
+                            .purgeExpired(System.currentTimeMillis())
+                    }.onFailure { Log.w(TAG, "purgeExpired failed: $it") }
+                } finally {
+                    finishSafely()
+                }
             }
         }
-
-        // 自续约（KeepAliveService 存活期间由它启动；服务被杀后本接收器仍可维持链条）
-        schedule(context)
     }
 }

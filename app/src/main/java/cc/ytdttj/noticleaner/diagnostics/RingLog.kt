@@ -59,6 +59,16 @@ object RingLog {
     private var lastMsg: String? = null
     private var lastMsgTs = ""
     private var lastCount = 1
+    private var lastKey: String? = null
+
+    /**
+     * 去重键 = 消息里的**易变 hex 串归一化**（内存地址 @xxxx、PID 等）。
+     * 否则崩溃栈每次仅地址不同 → 永不折叠 → 崩溃风暴刷爆整个环形缓冲
+     * （M332BF 实测：环形日志被同一条 goAsync 崩溃刷满，正常条目全部被挤出）。
+     */
+    private fun dedupKey(msg: String): String = msg
+        .replace(Regex("@[0-9a-fA-F]{3,}"), "@x")
+        .replace(Regex("\\b[0-9a-fA-F]{8,}\\b"), "HEX")
 
     @Volatile
     private var ready = false
@@ -115,7 +125,8 @@ object RingLog {
 
     private fun appendLocked(msg: String) {
         // 相邻重复折叠：重复不落盘，仅累计；切换消息时补摘要行
-        if (msg == lastMsg) {
+        val key = dedupKey(msg)
+        if (key == lastKey) {
             lastCount++
             return
         }
@@ -128,6 +139,7 @@ object RingLog {
         writer.flush()
         lastMsg = msg
         lastMsgTs = stamp
+        lastKey = key
         lastCount = 1
         if (currentFile.length() > MAX_FILE_BYTES) rotateLocked(writer)
     }
@@ -138,6 +150,7 @@ object RingLog {
         runCatching { oldFile.delete() }
         runCatching { currentFile.renameTo(oldFile) }
         lastMsg = null // 轮转后重复折叠状态失效，避免摘要行指向已滚动文件
+        lastKey = null
         val newWriter = openWriter()
         newWriter.appendLine("${tsFormat.format(Date())} （环形日志轮转：单文件超 ${MAX_FILE_BYTES / 1024}KB，旧内容移至 ring.old.log）")
         newWriter.flush()
