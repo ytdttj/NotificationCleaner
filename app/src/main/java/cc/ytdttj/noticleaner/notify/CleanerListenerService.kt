@@ -197,6 +197,7 @@ class CleanerListenerService : NotificationListenerService() {
         super.onListenerConnected()
         listenerConnected = true
         android.util.Log.i("NCWatch", "listener CONNECTED")
+        cc.ytdttj.noticleaner.diagnostics.RingLog.log("监听已连接")
         // 补撤：学习/拦截时监听未连接而残留的通知（1.1.8）
         if (pendingCancels.isNotEmpty()) {
             val keys = pendingCancels.toList()
@@ -204,6 +205,8 @@ class CleanerListenerService : NotificationListenerService() {
             keys.forEach { runCatching { cancelNotification(it) } }
             android.util.Log.i("NCWatch", "pendingCancels flushed: ${keys.size}")
         }
+        // 1.4.0 Dev 15：监听恢复 → 撤下"监听已失效"提醒
+        runCatching { ListenerAlertNotifier.cancel(this) }
         // 追溯处理：监听断线期间弹出的通知不会触发回调，重连后扫一遍通知栏补处理（1.1.8）
         // 1.2.1：补扫走独立慢速通道（backfillDispatcher），不与实时通知抢并发
         runCatching {
@@ -218,6 +221,11 @@ class CleanerListenerService : NotificationListenerService() {
         // 1.1.11 修复：断线必须先落标志，否则看门狗用实例存在误判"已连接"，永远不会自愈重绑
         listenerConnected = false
         android.util.Log.w("NCWatch", "listener DISCONNECTED — requesting rebind")
+        cc.ytdttj.noticleaner.diagnostics.RingLog.log("✗ 监听断线 → 请求重绑")
+        // 1.4.0 Dev 15：断线即发提醒（悬浮 + 锁屏可见），仅在权限仍授予时提醒
+        runCatching {
+            if (isListenerEnabled(this)) ListenerAlertNotifier.notifyDown(this, "监听连接已断开")
+        }
         // 监听断线（进程被杀后系统回收绑定）→ 自愈重绑（Plan.md §7.1）
         requestRebindCompat(this)
         super.onListenerDisconnected()
@@ -225,6 +233,7 @@ class CleanerListenerService : NotificationListenerService() {
 
     override fun onDestroy() {
         android.util.Log.w("NCWatch", "listener onDestroy")
+        cc.ytdttj.noticleaner.diagnostics.RingLog.log("监听服务销毁")
         if (activeInstance === this) activeInstance = null
         appScope?.cancel()
         appScope = null
@@ -256,6 +265,12 @@ class CleanerListenerService : NotificationListenerService() {
         val text = listOf(content, bigText).filter { it.isNotEmpty() }
             .distinct().joinToString(" ").ifEmpty { content }
         if (title.isEmpty() && text.isEmpty()) return
+
+        // 1.4.0 Dev 12：环形日志全量留痕——此前 release 下 NCWatch logcat 门控，
+        // 事件无法事后归因（招行 09:31 上岛排查时 logcat/内存 trace 均已滚动丢失）
+        cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+            "通知 pkg=${sbn.packageName} backfill=$fromBackfill title=${title.take(24)}",
+        )
 
         // 1.1.13：灭屏瞬间 CPU 可能被挂起导致打分/入库中断，短超时部分唤醒锁保证处理完成
         // 1.2.0（ImprovePlan P1-4）：仅灭屏时加锁——亮屏时 CPU 本就唤醒，无需锁
@@ -365,6 +380,11 @@ class CleanerListenerService : NotificationListenerService() {
             }
         }
 
+        // 1.4.0 Dev 12：决策结果环形留痕（decision 常量可直接 grep：passed/whitelist/filtered_*）
+        cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+            "决策 pkg=$pkg decision=$decision p=$probability title=${title.take(24)}",
+        )
+
         if (decision == DECISION_FILTERED_BY_AI || decision == DECISION_FILTERED_BY_RULE) {
             // 1.3.2 诊断补盲：岛白名单相关包的通知被拦截时留痕（排查"扣款通知未上岛"——
             // 此前该路径无任何 trace，无法区分"被拦截"与"岛链路故障"）
@@ -378,6 +398,9 @@ class CleanerListenerService : NotificationListenerService() {
             val ok = runCatching { cancelNotification(sbn.key) }.isSuccess
             if (!ok) {
                 android.util.Log.w("NCWatch", "cancel failed, queued: $decision ${sbn.key.takeLast(12)}")
+                cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                    "✗ 清除通知失败 decision=$decision key=${sbn.key.takeLast(12)}",
+                )
                 pendingCancels.add(sbn.key)
             } else {
                 android.util.Log.i("NCWatch", "filtered+$decision p=$probability")

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">通知净化器</string>
+    <string name="app_name">通知净化</string>
     <string name="app_description">本地 AI 过滤广告通知；LSPosed 模块可阻止系统停止通知监听服务（后台保活）</string>
     <string name="service_label">通知净化服务</string>
     <string name="keepalive_channel">保活服务</string>

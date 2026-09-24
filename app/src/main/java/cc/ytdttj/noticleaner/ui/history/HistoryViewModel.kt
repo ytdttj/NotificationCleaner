@@ -155,39 +155,11 @@ class HistoryViewModel(
         if (labels.isNotEmpty()) {
             _toast.value = "正在拟合 ${labels.size} 条标注…" // P2-4：长拟合进度反馈，防"假死"
         }
-        val samples = labels.map {
-            SpamTuner.Sample(
-                text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n"),
-                spam = it.learnLabel == 1,
-                channelKey = if (it.channelId.isNotEmpty()) {
-                    cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(it.packageName, it.channelId)
-                } else {
-                    0
-                },
-                weight = maxOf(1, it.learnCount),
-            )
-        }
-        val base = modelRepo.baseModel() ?: return labels
-        val delta = SpamTuner.fit(base, samples)
-        modelRepo.applyDelta(delta)
-        modelRepo.setTunedFingerprint(modelRepo.baseFingerprint())
-
-        // 用新模型刷新已学习行的概率展示（带通道偏置，与热路径决策一致）
-        // P2-4：逐行 update 改单事务批量写入（N 个事务 → 1 个）
-        val effective = modelRepo.get() ?: return labels
-        val updated = ServiceLocator.db.withTransaction {
-            labels.map {
-                val text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n")
-                val chKey = if (it.channelId.isNotEmpty()) {
-                    cc.ytdttj.noticleaner.ai.FeatureHasher.channelKey(it.packageName, it.channelId)
-                } else {
-                    null
-                }
-                val p = effective.score(text, chKey).toFloat()
-                val row = it.copy(adProbability = p)
-                dao.update(row)
-                row
-            }
+        // 1.4.0 Dev 13：重拟合抽到 LearningHelper——统计明细页「全部学习」复用同一实现
+        val updated = cc.ytdttj.noticleaner.data.LearningHelper.refit(dao, modelRepo)
+        // Dev 14：拟合完成提示（此前只有"正在拟合…"，用户不知道何时结束）
+        if (labels.isNotEmpty()) {
+            _toast.value = "拟合完成（${labels.size} 条标注）"
         }
         _selected.value = _selected.value?.let { sel -> updated.firstOrNull { it.id == sel.id } ?: sel }
         return updated

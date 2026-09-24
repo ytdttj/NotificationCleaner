@@ -24,6 +24,9 @@ object IslandTrace {
             while (entries.size > MAX) entries.removeFirst()
         }
         android.util.Log.i("NCIsland", msg)
+        // 1.4.0 Dev 12：岛链路事件同步落盘到环形日志——内存 trace 仅 40 条且进程重启即清空，
+        // 排查"早晨扣款未上岛"时导出的 trace 已被刷掉（2026-09-23 实测）
+        runCatching { cc.ytdttj.noticleaner.diagnostics.RingLog.log("[岛] $msg") }
     }
 
     /** 诊断区展示文本（新→旧倒序，方便看最近一次） */

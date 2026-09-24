@@ -70,6 +70,8 @@ object ServiceLocator {
 
     fun init(app: Application) {
         appContext = app.applicationContext
+        // 1.4.0 Dev 12：环形日志最先初始化（后续任何组件的埋点即刻生效）
+        cc.ytdttj.noticleaner.diagnostics.RingLog.init(app)
         db = AppDatabase.get(app)
         settings = SettingsRepository(app)
         modelRepo = ModelRepository(app)

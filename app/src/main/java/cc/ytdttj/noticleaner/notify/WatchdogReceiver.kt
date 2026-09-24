@@ -68,10 +68,19 @@ class WatchdogReceiver : BroadcastReceiver() {
         val enabled = CleanerListenerService.isListenerEnabled(context)
         val connected = CleanerListenerService.isListenerConnected()
         Log.i(TAG, "fired enabled=$enabled connected=$connected uptime=${SystemClock.elapsedRealtime()}")
+        // 1.4.0 Dev 12：环形留痕（心跳 30s/次，相邻相同自动折叠为 ×N 摘要，不刷爆配额）
+        cc.ytdttj.noticleaner.diagnostics.RingLog.log("看门狗心跳 enabled=$enabled connected=$connected")
 
         if (enabled && !connected) {
             CleanerListenerService.requestRebindIfEnabled(context)
             Log.i(TAG, "rebind requested")
+            // Dev 15：看门狗发现"权限在、连接不在"→ 发失效提醒（内部 30 分钟冷却，不会刷屏）
+            runCatching {
+                ListenerAlertNotifier.notifyDown(context, "监听未连接，看门狗已尝试重绑")
+            }
+            cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                "✗ 看门狗：监听断连 → 请求重绑（连续第 $consecutiveDisconnected+1 次）",
+            )
             // 1.1.14：尝试重启保活前台服务——恢复进程重要性并抖掉可能卡死的绑定
             // （受 FGS 后台启动限制时抛异常，忽略：重绑请求已发出）
             runCatching { KeepAliveService.start(context) }
@@ -90,13 +99,18 @@ class WatchdogReceiver : BroadcastReceiver() {
                     lastRepairAt = now
                     consecutiveDisconnected = 0
                     Log.i(TAG, "listener still disconnected → shizuku listener repair")
+                    cc.ytdttj.noticleaner.diagnostics.RingLog.log("看门狗：Shizuku 强制修复监听")
                     val result = goAsync()
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         try {
                             val log = ListenerRepair.repair(ShizukuExecutor)
                             Log.i(TAG, "listener repair done:\n$log")
+                            cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                                "看门狗：Shizuku 修复完成 → ${log.lineSequence().firstOrNull()?.take(80)}",
+                            )
                         } catch (t: Throwable) {
                             Log.w(TAG, "listener repair failed: $t")
+                            cc.ytdttj.noticleaner.diagnostics.RingLog.log("✗ 看门狗：Shizuku 修复失败 $t")
                         } finally {
                             result.finish()
                         }

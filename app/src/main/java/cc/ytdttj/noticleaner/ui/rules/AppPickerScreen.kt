@@ -92,9 +92,9 @@ fun AppPickerScreen(
         it.label.contains(query, true) || it.pkg.contains(query, true)
     }
 
-    Scaffold(
+    cc.ytdttj.noticleaner.ui.glass.NcScaffold(
         topBar = {
-            TopAppBar(
+            cc.ytdttj.noticleaner.ui.glass.NcTopAppBar(
                 title = { Text(title) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
@@ -110,7 +110,7 @@ fun AppPickerScreen(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            OutlinedTextField(
+            cc.ytdttj.noticleaner.ui.glass.NcOutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 placeholder = { Text("搜索 App 名称或包名") },
@@ -136,7 +136,7 @@ fun AppPickerScreen(
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
                     items(filtered, key = { it.pkg }) { app ->
                         val checked = selected.containsKey(app.pkg)
-                        Card(
+                        cc.ytdttj.noticleaner.ui.glass.NcCard(
                             onClick = {
                                 if (multiSelect) {
                                     selected = if (checked) selected - app.pkg else selected + (app.pkg to app.label)

@@ -28,7 +28,7 @@ import cc.ytdttj.noticleaner.update.UpdateViewModel
 fun UpdatePromptDialog(vm: UpdateViewModel, onDismiss: () -> Unit) {
     val state by vm.state.collectAsState()
     when (val s = state) {
-        is UpdateState.Available -> AlertDialog(
+        is UpdateState.Available -> cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
             onDismissRequest = { vm.reset(); onDismiss() },
             title = { Text("发现新版本 v${s.release.versionName}") },
             text = {
@@ -40,7 +40,7 @@ fun UpdatePromptDialog(vm: UpdateViewModel, onDismiss: () -> Unit) {
             confirmButton = { TextButton(onClick = { vm.startDownload(s.release) }) { Text("立即更新") } },
             dismissButton = { TextButton(onClick = { vm.reset(); onDismiss() }) { Text("关闭") } },
         )
-        is UpdateState.Downloading -> AlertDialog(
+        is UpdateState.Downloading -> cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
             onDismissRequest = { vm.cancelDownload(); vm.reset(); onDismiss() },
             title = { Text("正在下载更新") },
             text = {
@@ -58,7 +58,7 @@ fun UpdatePromptDialog(vm: UpdateViewModel, onDismiss: () -> Unit) {
                 TextButton(onClick = { vm.cancelDownload(); vm.reset(); onDismiss() }) { Text("取消") }
             },
         )
-        is UpdateState.ReadyToInstall -> AlertDialog(
+        is UpdateState.ReadyToInstall -> cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
             onDismissRequest = { vm.reset(); onDismiss() },
             title = { Text("更新包已就绪") },
             text = { Text("点击「安装」打开系统安装器升级到 v${s.release.versionName}。") },

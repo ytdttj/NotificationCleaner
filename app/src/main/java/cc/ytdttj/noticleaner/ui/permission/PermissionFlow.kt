@@ -244,7 +244,7 @@ private fun PermissionCard(
     buttonText: String,
     onJump: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -263,7 +263,7 @@ private fun PermissionCard(
             Text(desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                OutlinedButton(onClick = onJump) { Text(buttonText) }
+                cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = onJump) { Text(buttonText) }
             }
         }
     }
@@ -282,7 +282,7 @@ fun PermissionLostDialog(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    AlertDialog(
+    cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("权限已失效") },
         text = {

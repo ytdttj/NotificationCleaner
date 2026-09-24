@@ -100,9 +100,9 @@ fun RuleEditScreen(
         c.mode == MatchMode.ALL_TEXT || c.values.any { it.isNotBlank() }
     }
 
-    Scaffold(
+    cc.ytdttj.noticleaner.ui.glass.NcScaffold(
         topBar = {
-            TopAppBar(
+            cc.ytdttj.noticleaner.ui.glass.NcTopAppBar(
                 title = { Text("新建规则") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
@@ -114,7 +114,7 @@ fun RuleEditScreen(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
         ) {
             // ---- 选中 APP ----
-            OutlinedButton(onClick = {
+            cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = {
                 AppPickerSession.initial = selectedApps
                 openAppPicker()
             }, modifier = Modifier.fillMaxWidth()) {
@@ -144,7 +144,7 @@ fun RuleEditScreen(
                 )
                 Spacer(Modifier.height(10.dp))
             }
-            OutlinedButton(onClick = {
+            cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = {
                 conditions = conditions + RuleCondition(MATCH_TITLE, MatchMode.ANY_TEXT, listOf(""))
             }, modifier = Modifier.fillMaxWidth()) {
                 Text("添加条件（${conditions.size}）")
@@ -176,7 +176,7 @@ private fun ConditionCard(
     onChange: (RuleCondition) -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("条件 ${index + 1}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
@@ -201,7 +201,7 @@ private fun ConditionCard(
             // 模式（下拉）
             var modeExpanded by remember { mutableStateOf(false) }
             ExposedDropdownMenuBox(expanded = modeExpanded, onExpandedChange = { modeExpanded = it }) {
-                OutlinedTextField(
+                cc.ytdttj.noticleaner.ui.glass.NcOutlinedTextField(
                     value = MatchMode.label(condition.mode),
                     onValueChange = {},
                     readOnly = true,
@@ -224,7 +224,7 @@ private fun ConditionCard(
             Spacer(Modifier.height(8.dp))
             // 文本值（多行；ALL_TEXT 不需要输入）
             if (condition.mode != MatchMode.ALL_TEXT) {
-                OutlinedTextField(
+                cc.ytdttj.noticleaner.ui.glass.NcOutlinedTextField(
                     value = condition.values.joinToString("\n"),
                     onValueChange = { raw ->
                         onChange(condition.copy(values = raw.split("\n")))
