@@ -234,7 +234,13 @@ def normalize_label(raw: str):
         return None
 
 
-def resolve_column(header, requested, candidates):
+def resolve_column(header, requested, candidates, fuzzy=True):
+    """列解析。fuzzy=False 时只接受精确匹配（含大小写/空白归一后的相等）。
+
+    1.4.0 Dev 13：text_col（全文列）必须走精确匹配——候选词"通知"会模糊命中
+    "通知标题"，导致训练只取标题、完全丢弃正文（真实数据的正文特征从未参与训练，
+    是"银行动账通知被判广告"的重要诱因之一）。
+    """
     if requested:
         if requested not in header:
             raise SystemExit(f"[错误] 指定列 {requested!r} 不在表头 {header} 中")
@@ -243,6 +249,8 @@ def resolve_column(header, requested, candidates):
         for h in header:
             if h.strip().lower() == cand.lower():
                 return h
+    if not fuzzy:
+        return None
     for cand in candidates:
         for h in header:
             if cand.lower() in h.lower():
@@ -287,7 +295,8 @@ def load_real_csv(path: Path, args) -> tuple:
     title_col = resolve_column(header, args.title_col, ["title", "标题", "通知标题", "name"])
     content_col = resolve_column(header, args.content_col, ["content", "text", "内容", "通知内容", "通知信息", "body"])
     label_col = resolve_column(header, args.label_col, ["label", "标签", "is_ad", "type", "类别", "分类", "判定"])
-    text_col = resolve_column(header, args.text_col, ["text", "text_full", "全文", "通知"])
+    # 精确匹配：避免"通知"模糊命中"通知标题"导致只用标题训练（Dev 13 修复）
+    text_col = resolve_column(header, args.text_col, ["text", "text_full", "全文"], fuzzy=False)
     reason_col = resolve_column(header, args.reason_col, ["消去理由", "取消理由", "reason"])
 
     ad_prefix = args.ad_reason.strip().lower()

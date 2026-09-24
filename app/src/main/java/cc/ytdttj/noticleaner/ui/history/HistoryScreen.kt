@@ -3,6 +3,7 @@ package cc.ytdttj.noticleaner.ui.history
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -63,7 +64,8 @@ import java.time.format.DateTimeFormatter
 // 1.3.2（P3-6）：SimpleDateFormat（非线程安全）→ java.time DateTimeFormatter（不可变）
 private val timeFmt = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
-private fun formatTime(epochMs: Long): String =
+/** internal：统计明细页（Dev 14 起可点开详情）复用同一时间格式 */
+internal fun formatTime(epochMs: Long): String =
     timeFmt.format(Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()))
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -94,7 +96,23 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
         }
     }
 
-    cc.ytdttj.noticleaner.ui.glass.NcScaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+    // Dev 14：玻璃模式下悬浮底栏位于 Scaffold 之外，Snackbar 默认贴底会被它盖住
+    // （升级后"正在拟合 N 条标注…"看不见）→ 底部让位一个底栏高度
+    val snackbarBottomPadding =
+        if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
+            cc.ytdttj.noticleaner.ui.glass.GlassFloatingBarClearance
+        } else {
+            0.dp
+        }
+
+    // 1.4.0 Dev 13：外层 MainScaffold 已应用状态栏 inset，此处必须清零，
+    // 否则顶部 inset 双叠加 → 筛选按钮上方一大片空白
+    cc.ytdttj.noticleaner.ui.glass.NcScaffold(
+        snackbarHost = {
+            Box(Modifier.padding(bottom = snackbarBottomPadding)) { SnackbarHost(snackbar) }
+        },
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+    ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -316,8 +334,12 @@ private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 通知详情弹层内容（internal：Dev 14 起统计明细页点击条目也复用它，
+ * 学习/取消学习交互与历史页完全一致）。
+ */
 @Composable
-private fun NotificationDetail(
+internal fun NotificationDetail(
     n: NotificationEntity,
     onJumpChannel: () -> Unit,
     onLearn: (Int) -> Unit,

@@ -318,6 +318,15 @@ fun NcScaffold(
     topBar: @Composable () -> Unit = {},
     floatingActionButton: @Composable () -> Unit = {},
     snackbarHost: @Composable () -> Unit = {},
+    /**
+     * 内容区窗口 inset（1.4.0 Dev 13 开放）。默认 = 状态栏+左右（玻璃模式）。
+     * **嵌套场景必须传 [WindowInsets.Companion.Zero]**：如历史页，其外层
+     * MainScaffold 的 Scaffold 已应用过状态栏 inset，内层再应用一次会双叠加，
+     * 页面顶部出现一整块空白（用户反馈"筛选按钮上方很大一片浪费空间"）。
+     */
+    contentWindowInsets: WindowInsets = WindowInsets.systemBars.only(
+        WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
+    ),
     content: @Composable (androidx.compose.foundation.layout.PaddingValues) -> Unit,
 ) {
     if (LocalGlassMode.current) {
@@ -327,7 +336,7 @@ fun NcScaffold(
             topBar = topBar,
             floatingActionButton = floatingActionButton,
             snackbarHost = snackbarHost,
-            contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+            contentWindowInsets = contentWindowInsets,
             content = content,
         )
     } else {
@@ -336,6 +345,7 @@ fun NcScaffold(
             topBar = topBar,
             floatingActionButton = floatingActionButton,
             snackbarHost = snackbarHost,
+            contentWindowInsets = contentWindowInsets,
             content = content,
         )
     }
@@ -516,6 +526,19 @@ data class GlassNavItem(val route: String, val label: String, val icon: ImageVec
 private val GlassBarItemPaddingH = 10.dp
 private val GlassBarItemPaddingV = 6.dp
 
+/** 底栏距屏幕底部 */
+private val GlassBarBottomMargin = 24.dp
+
+/**
+ * 悬浮底栏让位高度（1.4.0 Dev 14）：底栏由 GlassRoot 的 floatingBar 提供，位于
+ * Scaffold 之外 → Scaffold 的 Snackbar 不知道它存在，会被底栏盖住（升级后"正在拟合
+ * N 条标注…"提示看不见）。Snackbar/浮层用它做底部 padding 上移到底栏之上。
+ */
+val GlassFloatingBarClearance = GlassBarBottomMargin + 56.dp + 16.dp
+
+/** 悬浮底栏宽度占屏幕宽度的比例（Dev 14：3/5） */
+private const val GlassBarWidthFraction = 0.6f
+
 /**
  * 浮动玻璃底部导航胶囊（Dev 10 起去掉选中包裹胶囊）：
  * 选中态仅靠图标/文字变色（dynamic color 主色）表达，底栏本体实时透视页面滚动内容。
@@ -527,42 +550,49 @@ fun GlassBottomBar(
     onItemClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    // Dev 14：外层 Box 负责居中 + 底部留白；底栏本体宽度 = 屏幕宽度 × 3/5（原先是
+    // wrapContent，三个按钮挤在一起、整体偏短），按钮间用 SpaceEvenly 均分间距。
+    Box(
         modifier
             .fillMaxWidth()
-            .padding(bottom = 24.dp)
-            .wrapContentWidth(Alignment.CenterHorizontally)
-            // 采样页面真实内容（而非壁纸）：滚到底栏下方的列表项会被实时模糊/折射进底栏。
-            // 底栏由 GlassRoot 的 floatingBar 提供，位于 content 采样子树之外 → 无自引用环。
-            .glassSurface(
-                Capsule(),
-                strong = true,
-                backdropOverride = LocalContentBackdrop.current,
-            )
-            .clip(Capsule())
-            .padding(horizontal = GlassBarItemPaddingH, vertical = GlassBarItemPaddingV),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(bottom = GlassBarBottomMargin),
+        contentAlignment = Alignment.Center,
     ) {
-        items.forEach { item ->
-            val selected = item.route == selectedRoute
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .clip(Capsule())
-                    .clickable { onItemClick(item.route) }
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    item.icon,
-                    contentDescription = item.label,
-                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        Row(
+            Modifier
+                .fillMaxWidth(GlassBarWidthFraction)
+                // 采样页面真实内容（而非壁纸）：滚到底栏下方的列表项会被实时模糊/折射进底栏。
+                // 底栏由 GlassRoot 的 floatingBar 提供，位于 content 采样子树之外 → 无自引用环。
+                .glassSurface(
+                    Capsule(),
+                    strong = true,
+                    backdropOverride = LocalContentBackdrop.current,
                 )
-                Text(
-                    item.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                .clip(Capsule())
+                .padding(horizontal = GlassBarItemPaddingH, vertical = GlassBarItemPaddingV),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            items.forEach { item ->
+                val selected = item.route == selectedRoute
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .clip(Capsule())
+                        .clickable { onItemClick(item.route) }
+                        .padding(horizontal = 18.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        item.icon,
+                        contentDescription = item.label,
+                        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        item.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
