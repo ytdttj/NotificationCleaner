@@ -146,18 +146,22 @@ object IslandNotifier {
             IslandTrace.log("✗ 金额解析失败：'$title' / '${content.take(30)}'")
             return
         }
-        IslandTrace.log("金额解析: ${payment.capsuleText.trim()} 方向=${payment.direction} 折算=${payment.convertedCnyText ?: "无"}")
+        IslandTrace.log("金额解析: ${payment.capsuleText.trim()} 方向=${payment.direction} 折算=${payment.convertedCnyText ?: "无"} 原文='${title.take(16)}'/'${content.take(48)}'")
 
         val sig = "$pkg|${title.hashCode()}|${content.hashCode()}"
         val now = System.currentTimeMillis()
-        val last = recentPosted[sig]
-        if (last != null && now - last < DEDUP_WINDOW_MS) {
-            IslandTrace.log("✗ 60s 内重复推送，跳过")
-            return
+        // 原子去重：同一条通知可能被系统投递多次（并发回调），
+        // check-then-put 两步在并发下双双通过会重复上岛（2026-09-25 10:50 id=9002/9003 实证）
+        val prev = recentPosted.putIfAbsent(sig, now)
+        if (prev != null) {
+            if (now - prev < DEDUP_WINDOW_MS) {
+                IslandTrace.log("✗ 60s 内重复推送，跳过")
+                return
+            }
+            recentPosted[sig] = now // 过期条目刷新
         }
         // 清理过期条目，防长期驻留膨胀
         recentPosted.entries.removeIf { now - it.value > DEDUP_WINDOW_MS }
-        recentPosted[sig] = now
 
         val appName = PACKAGE_LABELS[pkg] ?: appLabel(context, pkg)
         val icon = runCatching {

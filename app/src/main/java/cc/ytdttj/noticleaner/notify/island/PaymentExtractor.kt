@@ -59,6 +59,60 @@ object PaymentExtractor {
         "取现", "取款", "分期", "还款", "缴费", "充值",
     )
 
+    // ---- 方向判定（2026-09-25 修复"招行快捷支付扣款上岛成 +52 收入"）----
+    //
+    // 原实现对全文做 contains 且收入词无条件优先，两个污染源导致判反：
+    // 1. 招行交易描述的"收款方/收款商户：xxx"（"收款"命中收入词，覆盖"扣款"）
+    // 2. 通知尾部营销文案（"转账0手续费，收款到账快"）
+    //
+    // 新策略：方向词几乎总紧贴金额（"扣款人民币52.00""收款¥25"），先在金额
+    // 邻接窗口内取**距金额最近**的方向词；窗口内没有再全文回退（保持退款语义）。
+    // "收款"后跟"方/人/商/账/户"是名词（收款方/收款商户），不算收入动作。
+    private const val WINDOW_BEFORE = 40
+    private const val WINDOW_AFTER = 16
+
+    /** "收款方/收款人/收款商户/收款账号/收款户名"等名词，不作为收入动作词 */
+    private fun isCollecteeNoun(text: String, idx: Int): Boolean =
+        text.getOrNull(idx + 2) in setOf('方', '人', '商', '账', '户', '名')
+
+    private fun directionOf(text: String, amountRange: IntRange?): Direction {
+        if (amountRange != null) {
+            val from = (amountRange.first - WINDOW_BEFORE).coerceAtLeast(0)
+            val to = (amountRange.last + 1 + WINDOW_AFTER).coerceAtMost(text.length)
+            val window = text.substring(from, to)
+            val amountStart = amountRange.first - from
+            val amountEnd = amountRange.last - from
+            var best: Direction? = null
+            var bestDist = Int.MAX_VALUE
+            fun scan(words: List<String>, dir: Direction) {
+                for (w in words) {
+                    var idx = window.indexOf(w)
+                    while (idx >= 0) {
+                        if (!(w == "收款" && isCollecteeNoun(window, idx))) {
+                            // 词与金额区间的间隔：词在金额前→(金额起点-词尾)；在金额后→(词头-金额终点)
+                            val dist = if (idx + w.length <= amountStart) {
+                                amountStart - (idx + w.length)
+                            } else {
+                                idx - amountEnd
+                            }
+                            if (dist in 0 until bestDist) { bestDist = dist; best = dir }
+                        }
+                        idx = window.indexOf(w, idx + 1)
+                    }
+                }
+            }
+            scan(INCOME_WORDS, Direction.IN)
+            scan(EXPENSE_WORDS, Direction.OUT)
+            if (best != null) return best
+        }
+        // 全文回退：收入词优先（保持"您支付的交易已退款"归收入语义）
+        return when {
+            INCOME_WORDS.any { text.contains(it) } -> Direction.IN
+            EXPENSE_WORDS.any { text.contains(it) } -> Direction.OUT
+            else -> Direction.UNKNOWN
+        }
+    }
+
     /**
      * 从通知标题+正文中提取第一笔支付金额。
      * 外币双金额（"交易金额 USD 25.00，折合人民币 ¥180.25"）时，
@@ -67,6 +121,7 @@ object PaymentExtractor {
     fun extract(title: String, content: String): Payment? {
         val text = "$title\n$content"
         var main: Pair<Currency, String>? = null
+        var mainRange: IntRange? = null
         var converted: String? = null
         for (m in PATTERN.findAll(text)) {
             val prefix = m.groupValues[1]
@@ -76,6 +131,7 @@ object PaymentExtractor {
             if (isZero(amount)) return null // "手续费0.00元" 之类的零额通知
             if (main == null) {
                 main = currency to amount
+                mainRange = m.range
             } else if (main.first != Currency.CNY && currency == Currency.CNY && converted == null) {
                 converted = "¥$amount"
                 break
@@ -85,7 +141,7 @@ object PaymentExtractor {
         return Payment(
             currency = mainHit.first,
             amountText = mainHit.second,
-            direction = directionOf(text),
+            direction = directionOf(text, mainRange),
             convertedCnyText = converted,
         )
     }
@@ -112,9 +168,4 @@ object PaymentExtractor {
     private fun isZero(amount: String): Boolean =
         runCatching { BigDecimal(amount.replace(",", "")).signum() == 0 }.getOrDefault(false)
 
-    private fun directionOf(text: String): Direction = when {
-        INCOME_WORDS.any { text.contains(it) } -> Direction.IN
-        EXPENSE_WORDS.any { text.contains(it) } -> Direction.OUT
-        else -> Direction.UNKNOWN
-    }
 }

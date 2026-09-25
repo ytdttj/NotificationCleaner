@@ -99,9 +99,17 @@ interface NotificationDao {
     @Query("SELECT COUNT(*) FROM notifications WHERE learned = 1")
     fun learnedCount(): Flow<Int>
 
-    /** 清理 7 天前未学习的过期通知 */
-    @Query("DELETE FROM notifications WHERE learned = 0 AND expireAt < :now")
-    suspend fun purgeExpired(now: Long): Int
+    /**
+     * 清理保留期外的过期通知（Dev 6：保留天数可调）。
+     * 按 postTime 判定（而非写入时固定的 expireAt），改保留天数立即对存量生效；
+     * 已学习的标注（learned=1）永不清理，供模型重拟合。
+     */
+    @Query("DELETE FROM notifications WHERE learned = 0 AND postTime < :cutoff")
+    suspend fun purgeOlderThan(cutoff: Long): Int
+
+    /** CSV 导出（Dev 6）：全量历史通知，按时间倒序 */
+    @Query("SELECT * FROM notifications ORDER BY postTime DESC")
+    suspend fun exportAll(): List<NotificationEntity>
 
     @Query("SELECT DISTINCT packageName, appName FROM notifications")
     suspend fun distinctApps(): List<AppRef>

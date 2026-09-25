@@ -148,11 +148,13 @@ class WatchdogReceiver : BroadcastReceiver() {
                             cc.ytdttj.noticleaner.diagnostics.RingLog.log("✗ 看门狗：Shizuku 修复失败 $t")
                         }
                     }
-                    // 1.2.0（ImprovePlan P0-2）：顺带清理过期通知
+                    // 1.2.0（ImprovePlan P0-2）：顺带清理过期通知（Dev 6：保留天数可调）
                     runCatching {
+                        val cutoff = cc.ytdttj.noticleaner.ServiceLocator.settings
+                            .historyRetentionCutoff(System.currentTimeMillis())
                         cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao()
-                            .purgeExpired(System.currentTimeMillis())
-                    }.onFailure { Log.w(TAG, "purgeExpired failed: $it") }
+                            .purgeOlderThan(cutoff)
+                    }.onFailure { Log.w(TAG, "purgeOlderThan failed: $it") }
                 } finally {
                     finishSafely()
                 }
@@ -162,9 +164,11 @@ class WatchdogReceiver : BroadcastReceiver() {
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                 try {
                     runCatching {
+                        val cutoff = cc.ytdttj.noticleaner.ServiceLocator.settings
+                            .historyRetentionCutoff(System.currentTimeMillis())
                         cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao()
-                            .purgeExpired(System.currentTimeMillis())
-                    }.onFailure { Log.w(TAG, "purgeExpired failed: $it") }
+                            .purgeOlderThan(cutoff)
+                    }.onFailure { Log.w(TAG, "purgeOlderThan failed: $it") }
                 } finally {
                     finishSafely()
                 }

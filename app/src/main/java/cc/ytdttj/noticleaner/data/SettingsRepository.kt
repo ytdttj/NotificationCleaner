@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import cc.ytdttj.noticleaner.notify.island.IslandNotifier
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
@@ -103,6 +104,20 @@ class SettingsRepository(private val context: Context) {
     suspend fun setUpdateChannel(value: String) {
         context.dataStore.edit { it[keyUpdateChannel] = value }
     }
+
+    // ---- 历史通知保留天数（Dev 6）：监控式滚动，最新的顶掉 N 天前的 ----
+    private val keyHistoryRetentionDays = intPreferencesKey("history_retention_days")
+
+    /** 历史通知保留天数（1-90，默认 7）；已学习的标注不受清理影响 */
+    val historyRetentionDays: Flow<Int> = context.dataStore.data.map { it[keyHistoryRetentionDays] ?: 7 }
+
+    suspend fun setHistoryRetentionDays(value: Int) {
+        context.dataStore.edit { it[keyHistoryRetentionDays] = value.coerceIn(1, 90) }
+    }
+
+    /** 清理截止时间戳：now - 保留天数（purgeOlderThan 的 cutoff） */
+    suspend fun historyRetentionCutoff(now: Long): Long =
+        now - historyRetentionDays.first().toLong() * 86_400_000L
 
     // ---- 界面风格（1.4.0 Dev 4）：MATERIAL=Material 3 / GLASS=液态玻璃（Kyant0 Backdrop） ----
     private val keyUiTheme = stringPreferencesKey("ui_theme")

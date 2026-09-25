@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
@@ -27,6 +30,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -57,6 +61,7 @@ import cc.ytdttj.noticleaner.data.db.DECISION_ONGOING
 import cc.ytdttj.noticleaner.data.db.DECISION_WHITELIST
 import cc.ytdttj.noticleaner.data.db.NotificationEntity
 import cc.ytdttj.noticleaner.notify.KeepAliveManager
+import cc.ytdttj.noticleaner.ui.rules.AppPickerSession
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -68,9 +73,15 @@ private val timeFmt = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 internal fun formatTime(epochMs: Long): String =
     timeFmt.format(Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()))
 
+/** 日期分组头格式（Dev 6）："9月25日" */
+private val dayFmt = DateTimeFormatter.ofPattern("M月d日")
+
+private fun dayOf(epochMs: Long): java.time.LocalDate =
+    Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).toLocalDate()
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
+fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpenAppPicker: () -> Unit = {}) {
     val list by vm.list.collectAsState()
     val filter by vm.filter.collectAsState()
     val search by vm.search.collectAsState()
@@ -134,13 +145,24 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
                     )
                 }
             }
-            androidx.compose.material3.OutlinedTextField(
-                value = search,
-                onValueChange = { vm.search.value = it },
-                placeholder = { Text("搜索 App / 标题 / 内容") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(56.dp),
-            )
+            var advOpen by remember { mutableStateOf(false) }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = search,
+                    onValueChange = { vm.search.value = it },
+                    placeholder = { Text("搜索 App / 标题 / 内容") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f).height(56.dp),
+                )
+                AdvancedFilterButton(vm, onOpenAppPicker, advOpen) { advOpen = !advOpen }
+            }
+            if (advOpen) {
+                AdvancedFilterPanel(vm, onOpenAppPicker)
+            }
             Spacer(Modifier.height(4.dp))
             if (list.isEmpty()) {
                 Column(
@@ -160,7 +182,12 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory())) {
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
                 ) {
-                    items(list, key = { it.id }) { n ->
+                    // Dev 6：日期分组头——列表从新到旧，相邻两条日期不同时插入"9月25日"分隔
+                    itemsIndexed(list, key = { _, n -> n.id }) { i, n ->
+                        val day = dayOf(n.postTime)
+                        if (i == 0 || dayOf(list[i - 1].postTime) != day) {
+                            DateHeader(day)
+                        }
                         NotificationCard(n) { vm.select(n) }
                     }
                 }
@@ -331,6 +358,173 @@ private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/**
+ * 高级筛选（Dev 6）：搜索框右侧的"筛选"按钮 + 展开面板。
+ * App 选择复用规则页的 AppPickerScreen（全量应用列表，含系统应用），
+ * 结果经 AppPickerSession 单例回读（与 RuleEditScreen 同款机制）。
+ */
+private fun advancedActiveCount(adv: HistoryAdvancedFilter): Int {
+    var c = 0
+    if (adv.apps.isNotEmpty()) c++
+    if (adv.learnedOnly) c++
+    if (adv.startDate != null) c++
+    if (adv.endDate != null) c++
+    return c
+}
+
+@Composable
+private fun AdvancedFilterButton(
+    vm: HistoryViewModel,
+    onOpenAppPicker: () -> Unit,
+    open: Boolean,
+    onToggle: () -> Unit,
+) {
+    val adv by vm.advancedFilter.collectAsState()
+    // 进入历史页时回读选择器结果（从 AppPicker 返回后本组合重建，LaunchedEffect 重跑）
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        AppPickerSession.result?.let { result ->
+            vm.setAdvancedFilter(vm.advancedFilter.value.copy(apps = result))
+            AppPickerSession.result = null
+        }
+    }
+    val active = advancedActiveCount(adv)
+    FilterChip(
+        selected = open || active > 0,
+        onClick = onToggle,
+        label = { Text(if (active > 0) "筛选($active)" else "筛选") },
+    )
+}
+
+@Composable
+private fun AdvancedFilterPanel(vm: HistoryViewModel, onOpenAppPicker: () -> Unit) {
+    val adv by vm.advancedFilter.collectAsState()
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        Spacer(Modifier.height(6.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AssistChip(
+                onClick = {
+                    // 复用规则页 AppPicker（含系统应用），结果经 AppPickerSession 回读
+                    cc.ytdttj.noticleaner.ui.rules.AppPickerSession.initial = adv.apps
+                    onOpenAppPicker()
+                },
+                label = {
+                    Text(
+                        if (adv.apps.isEmpty()) "全部 App"
+                        else "App(${adv.apps.size})",
+                    )
+                },
+            )
+            FilterChip(
+                selected = adv.learnedOnly,
+                onClick = { vm.setAdvancedFilter(adv.copy(learnedOnly = !adv.learnedOnly)) },
+                label = { Text("已学习") },
+            )
+            if (advancedActiveCount(adv) > 0) {
+                TextButton(onClick = { vm.setAdvancedFilter(HistoryAdvancedFilter()) }) { Text("清除") }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DateField(
+                label = "开始时间",
+                value = adv.startDate,
+                onUpdate = { vm.setAdvancedFilter(adv.copy(startDate = it)) },
+                modifier = Modifier.weight(1f),
+            )
+            DateField(
+                label = "结束时间",
+                value = adv.endDate,
+                onUpdate = { vm.setAdvancedFilter(adv.copy(endDate = it)) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/**
+ * 日期选择字段（Dev 6 调整）：点击弹出 M3 日历（DatePickerDialog），不再手动输入。
+ * 注意 DatePicker 用 UTC 毫秒——LocalDate 与 millis 互转必须走 UTC 日界，否则差一天。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DateField(label: String, value: java.time.LocalDate?, onUpdate: (java.time.LocalDate?) -> Unit, modifier: Modifier = Modifier) {
+    var showPicker by remember { mutableStateOf(false) }
+    Box(modifier) {
+        androidx.compose.material3.OutlinedTextField(
+            value = value?.toString().orEmpty(),
+            onValueChange = {},
+            label = { Text(label) },
+            placeholder = { Text("点选日期") },
+            readOnly = true,
+            trailingIcon = {
+                androidx.compose.material3.IconButton(onClick = { showPicker = true }) {
+                    androidx.compose.material3.Icon(
+                        Icons.Filled.DateRange,
+                        contentDescription = "选择日期",
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+        )
+        // 透明覆盖层：整个字段可点（readOnly TextField 自身不吃点击）
+        Box(
+            Modifier.matchParentSize().clickable { showPicker = true },
+        )
+    }
+    if (showPicker) {
+        val state = androidx.compose.material3.rememberDatePickerState(
+            initialSelectedDateMillis = value?.toEpochDay()?.times(86_400_000L),
+        )
+        androidx.compose.material3.DatePickerDialog(
+            onDismissRequest = { showPicker = false },
+            confirmButton = {
+                TextButton(
+                    enabled = state.selectedDateMillis != null,
+                    onClick = {
+                        // DatePicker 内部按 UTC 日界取整日，回读必须走 UTC
+                        onUpdate(
+                            state.selectedDateMillis?.let { ms ->
+                                java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.of("UTC")).toLocalDate()
+                            },
+                        )
+                        showPicker = false
+                    },
+                ) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { onUpdate(null); showPicker = false }) { Text("清除") }
+            },
+        ) {
+            androidx.compose.material3.DatePicker(state = state)
+        }
+    }
+}
+
+/** 日期分组头：居中日期文本（列表从新到旧，每天插入一个） */
+@Composable
+private fun DateHeader(day: java.time.LocalDate) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        androidx.compose.material3.HorizontalDivider(Modifier.weight(1f))
+        Text(
+            dayFmt.format(day),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        androidx.compose.material3.HorizontalDivider(Modifier.weight(1f))
     }
 }
 

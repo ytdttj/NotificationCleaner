@@ -28,6 +28,20 @@ import kotlinx.coroutines.launch
 enum class HistoryFilter { ALL, FILTERED, PASSED }
 
 /**
+ * 历史高级筛选（Dev 6）：App（多选，复用规则页 AppPicker，含系统应用）+ 仅看已学习 +
+ * 日期范围（含起止当天）。任一条件为空/关闭即不参与过滤。
+ */
+data class HistoryAdvancedFilter(
+    val apps: List<Pair<String, String>> = emptyList(), // pkg to label；空 = 全部 App
+    val learnedOnly: Boolean = false,
+    val startDate: java.time.LocalDate? = null,
+    val endDate: java.time.LocalDate? = null,
+) {
+    val isDefault: Boolean
+        get() = apps.isEmpty() && !learnedOnly && startDate == null && endDate == null
+}
+
+/**
  * 历史列表 + 详情页的共享 VM（详情含通道跳转与 AI 学习，Plan.md §6.1）。
  *
  * 学习机制（1.1.0，复刻 Notice）：
@@ -46,11 +60,15 @@ class HistoryViewModel(
     /** 历史搜索（匹配 App 名称/标题/内容，忽略大小写） */
     val search = MutableStateFlow("")
 
+    /** 高级筛选（Dev 6）：App（多选）/ 已学习 / 日期范围 */
+    val advancedFilter = MutableStateFlow(HistoryAdvancedFilter())
+
     /**
      * 历史列表（1.3.2 P2-5：筛选下推 SQL）——tab 切换用 flatMapLatest 选择对应查询，
      * 每次 DB 变更只重查/重映当前 tab 的行（原来每条变更都重查 500 行再内存过滤）；
      * 搜索 200ms 防抖；显式 flowOn + distinctUntilChanged。
      * 收益边界：各 tab 仍受 LIMIT 500 约束（"已过滤"展示的是最新 500 条过滤项，非全部）。
+     * Dev 6：高级筛选（App/已学习/日期）在 500 行窗口内内存过滤。
      */
     val list: StateFlow<List<NotificationEntity>> =
         combine(
@@ -63,18 +81,39 @@ class HistoryViewModel(
                 }
             },
             search.debounce(200),
-        ) { rows, q ->
-            if (q.isBlank()) rows
-            else rows.filter {
+            advancedFilter,
+        ) { rows, q, adv ->
+            var out = if (q.isBlank()) rows else rows.filter {
                 it.appName.contains(q, true) ||
                     it.title.contains(q, true) ||
                     it.content.contains(q, true) ||
                     it.packageName.contains(q, true)
             }
+            if (!adv.isDefault) out = applyAdvanced(out, adv)
+            out
         }
             .distinctUntilChanged()
             .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private fun applyAdvanced(
+        rows: List<NotificationEntity>,
+        adv: HistoryAdvancedFilter,
+    ): List<NotificationEntity> {
+        val zone = java.time.ZoneId.systemDefault()
+        val startMs = adv.startDate?.atStartOfDay(zone)?.toInstant()?.toEpochMilli()
+        val endMs = adv.endDate?.plusDays(1)?.atStartOfDay(zone)?.toInstant()?.toEpochMilli()
+        return rows.filter { n ->
+            (adv.apps.isEmpty() || adv.apps.any { it.first == n.packageName }) &&
+                (!adv.learnedOnly || n.learned) &&
+                (startMs == null || n.postTime >= startMs) &&
+                (endMs == null || n.postTime < endMs)
+        }
+    }
+
+    fun setAdvancedFilter(f: HistoryAdvancedFilter) {
+        advancedFilter.value = f
+    }
 
     private val _selected = MutableStateFlow<NotificationEntity?>(null)
     val selected: StateFlow<NotificationEntity?> = _selected

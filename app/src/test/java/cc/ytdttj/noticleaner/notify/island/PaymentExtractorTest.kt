@@ -144,4 +144,63 @@ class PaymentExtractorTest {
         assertNotNull(p)
         assertEquals("111.00", p!!.amountText)
     }
+
+    // ---- 2026-09-25 事故回归：招行快捷支付扣款上岛成 +52 收入 ----
+    // 根因：全文 contains + 收入词无条件优先，"收款方/收款商户"与尾部营销文案
+    // （"收款到账快"）命中收入词表，覆盖了正文的"快捷支付扣款"。
+    // 修复：金额邻接窗口内取最近方向词 + "收款方"类名词排除。
+
+    @Test
+    fun `招行快捷支付扣款含收款方 仍是支出`() {
+        val p = extract(
+            "招商银行",
+            "您账户****1234于2026年9月25日10:50发生快捷支付扣款，收款方：某某科技有限公司，人民币52.00",
+        )
+        assertNotNull(p)
+        assertEquals("52.00", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+        assertEquals("-¥52.00\u2009", p.capsuleText)
+    }
+
+    @Test
+    fun `招行快捷支付扣款商户为微信红包 仍是支出`() {
+        // 2026-09-25 10:50 真机事故原文：商户通道名【财付通-微信支付-微信红包】
+        // 里的"红包"命中收入词表，把"快捷支付扣款"覆盖判成收入（+¥52.00）
+        val p = extract(
+            "招商银行",
+            "您账户1662于09月25日10:50在【财付通-微信支付-微信红包】发生快捷支付扣款，人民币52.00",
+        )
+        assertNotNull(p)
+        assertEquals("52.00", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+        assertEquals("-¥52.00\u2009", p.capsuleText)
+    }
+
+    @Test
+    fun `招行扣款含尾部营销文案 仍是支出`() {
+        val p = extract(
+            "招商银行",
+            "您账户****1234于2026年9月25日10:50快捷支付扣款人民币52.00元，交易后余额1,000.00元。" +
+                "下载招商银行App，转账0手续费，收款实时到账，快去体验吧",
+        )
+        assertNotNull(p)
+        assertEquals("52.00", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+    }
+
+    @Test
+    fun `真实收款仍是收入`() {
+        // 无"方/人/商/账/户"后缀的"收款"是动作，应判收入
+        val p = extract("微信支付", "微信收款 ¥25.00")
+        assertNotNull(p)
+        assertEquals(PaymentExtractor.Direction.IN, p!!.direction)
+    }
+
+    @Test
+    fun `工行入账含消费字样 仍归收入`() {
+        // "您尾号1234账户入账人民币500元（原消费退款）"——收入词紧邻金额
+        val p = extract("工商银行", "您尾号1234账户入账人民币500.00元，摘要：消费退款")
+        assertNotNull(p)
+        assertEquals(PaymentExtractor.Direction.IN, p!!.direction)
+    }
 }

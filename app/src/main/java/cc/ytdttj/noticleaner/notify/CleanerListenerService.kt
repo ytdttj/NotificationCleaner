@@ -178,7 +178,9 @@ class CleanerListenerService : NotificationListenerService() {
         android.util.Log.i("NCWatch", "listener onCreate uptime=${android.os.SystemClock.elapsedRealtime()}")
         val scope = appScope ?: return
         scope.launch {
-            ServiceLocator.db.notificationDao().purgeExpired(System.currentTimeMillis())
+            // Dev 6：保留天数可调（默认 7 天），按 postTime 清理
+            val cutoff = ServiceLocator.settings.historyRetentionCutoff(System.currentTimeMillis())
+            ServiceLocator.db.notificationDao().purgeOlderThan(cutoff)
         }
         // 1.1.14：进程被拉起（NMS 重绑/开机/升级）时也续约闹钟看门狗，保证链条不断
         WatchdogReceiver.schedule(this)

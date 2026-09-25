@@ -4,4 +4,6 @@
     <external-files-path name="update" path="update/" />
     <!-- 诊断日志导出：getExternalFilesDir(null)/logs/ -->
     <external-files-path name="logs" path="logs/" />
+    <!-- 历史通知 CSV 导出：cacheDir/exports/（Dev 6） -->
+    <cache-path name="exports" path="exports/" />
 </paths>

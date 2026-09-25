@@ -191,6 +191,13 @@ class SettingsViewModel(
         viewModelScope.launch { settings.setIslandEnabled(v) }
     }
 
+    // ---- 历史通知（Dev 6：保留天数可调）----
+    val historyRetentionDays = settings.historyRetentionDays.stateIn(viewModelScope, SharingStarted.Eagerly, 7)
+
+    fun setHistoryRetentionDays(v: Int) {
+        viewModelScope.launch { settings.setHistoryRetentionDays(v) }
+    }
+
     fun toggleIslandPackage(pkg: String) {
         viewModelScope.launch {
             val current = islandPackages.value
@@ -768,6 +775,84 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                 diagMsg?.let {
                     Spacer(Modifier.height(4.dp))
                     Text(it, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+                // ---- 历史通知管理（Dev 6，折叠）----
+                var historyPanelOpen by remember { mutableStateOf(false) }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clickable { historyPanelOpen = !historyPanelOpen },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (historyPanelOpen) "▾ 历史通知管理" else "▸ 历史通知管理",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                if (historyPanelOpen) {
+                    Spacer(Modifier.height(8.dp))
+                    // CSV 导出
+                    val csvScope = rememberCoroutineScope()
+                    var csvExporting by remember { mutableStateOf(false) }
+                    var csvMsg by remember { mutableStateOf<String?>(null) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("导出历史通知 CSV", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "全部历史通知（应用/包名/通道/标题/正文/AI率/学习状态），经系统分享",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
+                            enabled = !csvExporting,
+                            onClick = {
+                                csvExporting = true
+                                csvScope.launch {
+                                    val msg = runCatching {
+                                        val file = cc.ytdttj.noticleaner.diagnostics.HistoryCsvExporter.export(diagContext)
+                                        val uri = androidx.core.content.FileProvider.getUriForFile(
+                                            diagContext,
+                                            "${diagContext.packageName}.fileprovider",
+                                            file,
+                                        )
+                                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                            type = "text/csv"
+                                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        diagContext.startActivity(
+                                            android.content.Intent.createChooser(send, "分享历史通知 CSV"),
+                                        )
+                                        "已导出 ${file.name}（${file.length() / 1024}KB）"
+                                    }.getOrElse { "导出失败: ${it.message}" }
+                                    csvExporting = false
+                                    csvMsg = msg
+                                }
+                            },
+                        ) { Text(if (csvExporting) "导出中…" else "导出") }
+                    }
+                    csvMsg?.let {
+                        Spacer(Modifier.height(4.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // 保留天数（监控式循环：最新的顶掉 N 天前的）
+                    val historyRetentionDays by vm.historyRetentionDays.collectAsState()
+                    var retentionDraft by remember(historyRetentionDays) { mutableStateOf(historyRetentionDays) }
+                    Column(Modifier.fillMaxWidth()) {
+                        Text("历史保留天数：${retentionDraft} 天", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "未学习的历史通知只保留 N 天，最新通知不断把最老的顶掉（监控式循环保存）；已学习的标注不受影响",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        androidx.compose.material3.Slider(
+                            value = retentionDraft.toFloat(),
+                            onValueChange = { retentionDraft = it.toInt().coerceIn(1, 30) },
+                            onValueChangeFinished = { vm.setHistoryRetentionDays(retentionDraft) },
+                            valueRange = 1f..30f,
+                            steps = 28,
+                        )
+                    }
                 }
             }
         }
