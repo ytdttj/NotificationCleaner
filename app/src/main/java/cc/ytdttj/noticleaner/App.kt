@@ -36,10 +36,13 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
     }
 
     override fun onServiceBind(service: XposedService) {
+        // Dev 7：转发到激活检测器（框架绑定=模块已启用；scope/请求作用域能力集中于此）
+        cc.ytdttj.noticleaner.keepalive.LspServiceDetector.onServiceBound(service)
         ServiceLocator.onXposedServiceBound(service)
     }
 
     override fun onServiceDied(service: XposedService) {
+        cc.ytdttj.noticleaner.keepalive.LspServiceDetector.onServiceDied()
         ServiceLocator.onXposedServiceDied()
     }
 }

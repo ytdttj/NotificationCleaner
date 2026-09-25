@@ -119,6 +119,12 @@ class SettingsViewModel(
 
     init {
         refreshKeepAlive()
+        // Dev 7：LSPosed 框架服务绑定/作用域变化（含授权框批准后）自动刷新保活与岛探测
+        viewModelScope.launch {
+            cc.ytdttj.noticleaner.keepalive.LspServiceDetector.state.collect {
+                refreshKeepAlive()
+            }
+        }
     }
 
     fun refreshKeepAlive() {
@@ -153,6 +159,13 @@ class SettingsViewModel(
                 )?.getBoolean("canShowFocus", false)
             }.getOrNull()
             val lsp = ServiceLocator.keepAlive.isLspActive()
+            val lspService = cc.ytdttj.noticleaner.keepalive.LspServiceDetector.state.value
+            val islandScopeReady = lspService.bound && lspService.hasAllScope(
+                setOf(
+                    cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_SYSTEM_UI,
+                    cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_XMSF,
+                ),
+            )
             val osLine = when {
                 protocol >= 3 -> "系统：HyperOS 3 超级岛"
                 protocol == 2 -> "系统：焦点通知（OS2），无岛形态"
@@ -163,8 +176,10 @@ class SettingsViewModel(
                 false -> "白名单：未放行（LSPosed 未激活或未勾选系统界面作用域）"
                 null -> "白名单：无法查询"
             }
-            val lspLine = when (lsp) {
-                true -> "LSPosed：模块已激活"
+            val lspLine = when {
+                lspService.bound && islandScopeReady -> "LSPosed：模块已激活（岛作用域已就绪）"
+                lspService.bound -> "LSPosed：模块已激活（岛作用域未授权，打开岛开关可授权）"
+                lsp == true -> "LSPosed：模块已激活（system_server 心跳）"
                 // Dev 5：检测不到证据 ≠ 未激活（原实现误报），如实显示"无法自动检测"
                 else -> "LSPosed：无法自动检测（以 LSPosed 管理器为准）"
             }
@@ -188,7 +203,46 @@ class SettingsViewModel(
     // ---- 超级岛（island 分支功能）----
 
     fun setIslandEnabled(v: Boolean) {
+        val was = islandEnabled.value
         viewModelScope.launch { settings.setIslandEnabled(v) }
+        // Dev 7：首次打开岛开关 → 弹 LSPosed 授权框，请求岛作用域（系统界面 + 小米服务框架）
+        if (v && !was) {
+            cc.ytdttj.noticleaner.keepalive.LspServiceDetector.requestScope(
+                listOf(
+                    cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_SYSTEM_UI,
+                    cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_XMSF,
+                ),
+            ) { result ->
+                _toast.value = result.fold(
+                    onSuccess = { scope ->
+                        val ok = scope.containsAll(
+                            listOf(
+                                cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_SYSTEM_UI,
+                                cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_XMSF,
+                            ),
+                        )
+                        if (ok) "岛作用域已授权：请到 高级功能 点击「重启岛作用域」让 hook 立即生效"
+                        else "岛作用域部分授权，可在 LSPosed 管理器补齐后重启作用域"
+                    },
+                    onFailure = { "岛作用域授权失败：${it.message}（也可在 LSPosed 管理器手动勾选）" },
+                )
+            }
+        }
+    }
+
+    // ---- LSPosed 框架服务状态（Dev 7：libxposed service 绑定 + 作用域）----
+    val lspServiceState = cc.ytdttj.noticleaner.keepalive.LspServiceDetector.state
+
+    /** 保活：请求系统框架（android）作用域（system_server 保活/拦截 hook） */
+    fun requestKeepAliveScope() {
+        cc.ytdttj.noticleaner.keepalive.LspServiceDetector.requestScope(
+            listOf(cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_SYSTEM_SERVER),
+        ) { result ->
+            _toast.value = result.fold(
+                onSuccess = { "系统框架作用域已授权：请重启手机使保活 hook 生效" },
+                onFailure = { "授权失败：${it.message}" },
+            )
+        }
     }
 
     // ---- 历史通知（Dev 6：保留天数可调）----
@@ -423,6 +477,7 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
     val filteredCount by vm.filteredCount.collectAsState()
     val learnedCount by vm.learnedCount.collectAsState()
     val keepAlive by vm.keepAlive.collectAsState()
+    val lspServiceState by vm.lspServiceState.collectAsState()
     val modelInfo by vm.modelInfo.collectAsState()
     val execResult by vm.execResult.collectAsState()
     val execBusy by vm.execBusy.collectAsState()
@@ -637,10 +692,16 @@ fun SettingsScreen(onOpenStats: (String) -> Unit, vm: SettingsViewModel = viewMo
                     AdvancedRow(
                         label = "LSPosed 保活",
                         desc = "安装 LSPosed 并激活本模块（作用域勾选「系统(android)」）后自动生效，重启手机完成。" +
-                            "未打勾 = 未检测到激活证据（模块心跳或系统模块列表），以 LSPosed 管理器为准",
+                            "未打勾 = 未检测到激活证据（框架服务/模块心跳），以 LSPosed 管理器为准",
                         ok = keepAlive.lspDetected == true,
-                        actionLabel = null,
-                        onAction = {},
+                        actionLabel = if (lspServiceState.bound && !lspServiceState.hasScope(
+                                cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_SYSTEM_SERVER,
+                            )
+                        ) "授权" else null,
+                        onAction = {
+                            if (lspServiceState.bound) vm.requestKeepAliveScope()
+                            else vm.showToast("请先在 LSPosed 中启用本模块")
+                        },
                     )
                     AdvancedRow(
                         label = "重启岛作用域",

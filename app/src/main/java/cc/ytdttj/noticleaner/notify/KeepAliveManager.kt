@@ -52,6 +52,10 @@ class KeepAliveManager(private val context: Context) {
      *    检测不到 ≠ 未激活（本次 bug 根因）。
      */
     fun isLspActive(): Boolean? {
+        // 证据 0（最标准）：libxposed service 绑定——LSPosed 仅对已启用模块绑定（Dev 7）
+        runCatching {
+            if (cc.ytdttj.noticleaner.keepalive.LspServiceDetector.isFrameworkBound()) return true
+        }
         // 证据 1：system_server 心跳
         runCatching {
             if (context.getSharedPreferences("lsp_heartbeat", Context.MODE_PRIVATE)

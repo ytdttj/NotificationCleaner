@@ -117,31 +117,14 @@ class LspEntry : XposedModule() {
             hook(target).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept(NmsBlockHooker(engine, sink))
             log(Log.INFO, TAG, "NMS enqueueNotificationInternal hooked (${target.parameterCount} params)")
-            // Dev 5：模块激活心跳——hook 成功即模块真实在跑，经 ModuleLogProvider
-            // 回写偏好文件（decision=LSP_ALIVE），App 端 KeepAliveManager 以此作激活铁证。
-            // （原实现读 Settings.Secure enabled_xposed_modules，新版 LSPosed 上 key
-            //  缺失/格式漂移导致"已激活却显示未激活"。）
-            runCatching {
-                val sysCtx = Class.forName("android.app.ActivityThread")
-                    .getMethod("systemMain").invoke(null)?.let { at ->
-                        at.javaClass.getMethod("getSystemContext").invoke(at) as android.content.Context
-                    }
-                if (sysCtx != null) {
-                    val hb = android.content.ContentValues().apply {
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_PACKAGE, TARGET)
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_CHANNEL, "")
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_TITLE, "system_server NMS hook OK")
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_CONTENT, "")
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_POST_TIME, System.currentTimeMillis())
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_PROBABILITY, 0f)
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_DECISION,
-                            cc.ytdttj.noticleaner.provider.ModuleLogProvider.LSP_ALIVE_DECISION)
-                        put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_KEY, "lsp:heartbeat")
-                    }
-                    sink.submit(sysCtx, hb)
-                    log(Log.INFO, TAG, "LSP heartbeat submitted via ModuleLogProvider")
-                }
-            }.onFailure { log(Log.WARN, TAG, "heartbeat submit failed: $it") }
+            // Dev 5 曾在此处调 ActivityThread.systemMain() 取 SystemContext 提交心跳——
+            // 【恶性 bug】system_server 启动中二次调用 systemMain 会 new 出第二个
+            // ActivityThread 并 attach，污染全局状态：SystemServer.startOtherServices 的
+            // installSystemProviders 拿到残缺 ClassLoader → ClassNotFoundException →
+            // system_server FATAL → 重启循环 → 安全模式（2026-09-25 真机事故，Dev 6 首次
+            // 重启时引爆，LSPosed 日志 4718 行铁证）。
+            // Dev 7 修复：心跳改由 NmsBlockHooker 首次拦截时提交（那时系统已稳定运行，
+            // Context 取自 hook 到的 NMS 实例本身，零额外反射）。
         } catch (t: Throwable) {
             log(Log.WARN, TAG, "NMS hook failed: $t")
         }
@@ -168,7 +151,32 @@ class LspEntry : XposedModule() {
         private val sink: ModuleLogSink,
     ) : XposedInterface.Hooker {
 
+        /** Dev 7：首次真实拦截时提交激活心跳（此前的 systemMain() 方案会导致 system_server 崩溃） */
+        @Volatile
+        private var heartbeatSent = false
+
         override fun intercept(chain: XposedInterface.Chain): Any? {
+            if (!heartbeatSent) {
+                heartbeatSent = true
+                runCatching {
+                    val ctx = chain.thisObject?.let { nmsContext(it) }
+                    if (ctx != null) {
+                        val hb = android.content.ContentValues().apply {
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_PACKAGE, TARGET)
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_CHANNEL, "")
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_TITLE, "system_server NMS hook OK")
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_CONTENT, "")
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_POST_TIME, System.currentTimeMillis())
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_PROBABILITY, 0f)
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_DECISION,
+                                cc.ytdttj.noticleaner.provider.ModuleLogProvider.LSP_ALIVE_DECISION)
+                            put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_KEY, "lsp:heartbeat")
+                        }
+                        sink.submit(ctx, hb)
+                        android.util.Log.i(TAG, "LSP heartbeat submitted (first NMS enqueue)")
+                    }
+                }.onFailure { android.util.Log.w(TAG, "heartbeat submit failed: $it") }
+            }
             val args = chain.args
             val notification = args.firstOrNull { it is android.app.Notification } as? android.app.Notification
             var pkg: String? = null
