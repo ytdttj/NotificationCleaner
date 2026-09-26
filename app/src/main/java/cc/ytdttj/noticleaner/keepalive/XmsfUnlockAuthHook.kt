@@ -19,6 +19,10 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
  * - error == null：认证成功，照常 proceed
  * - error != null：将错误码字段 `a` 置 0，调用成功回调 `h()`，跳过原方法
  * 混淆名随 xmsf 版本可能漂移，找不到时记日志并静默退出。
+ *
+ * Dev 8 诊断（2026-09-26 上岛延迟排查）：成功路径此前完全无声，认证耗时是黑盒。
+ * 补充时间戳：b(error==null) 入口 / 成功回调 h() 调用时刻，经 LSPosed 日志
+ * 与 App 端"岛通知提交时刻"对齐，量化"岛等认证"的真实耗时。
  */
 class XmsfUnlockAuthHook(private val module: XposedModule) {
 
@@ -28,6 +32,9 @@ class XmsfUnlockAuthHook(private val module: XposedModule) {
 
     fun onPackageLoaded(param: PackageLoadedParam) {
         val cl = param.defaultClassLoader
+        // Dev 8：Hook 日志回流（认证时刻进 App 环形日志）；xmsf 进程无 Application，
+        // 读现有 ActivityThread 的 SystemContext（仅 getter 调用，安全）
+        cc.ytdttj.noticleaner.keepalive.HookLogSink.init("com.xiaomi.xmsf")
         val authSession = runCatching { cl.loadClass(AUTH_SESSION_CLASS) }.getOrNull() ?: run {
             module.log(android.util.Log.WARN, "NCIslandHook", "AuthSession not found in xmsf CL (version changed?)")
             return
@@ -47,21 +54,69 @@ class XmsfUnlockAuthHook(private val module: XposedModule) {
         }.onFailure {
             module.log(android.util.Log.WARN, "NCIslandHook", "hook AuthSession.b failed: $it")
         }
+        // Dev 8：成功回调 h() 时间戳（岛渲染前的最后一步，量化认证段耗时）
+        val successCb = authSession.declaredMethods
+            .filter { it.name == "h" && it.parameterCount == 0 }
+            .firstOrNull()
+        if (successCb != null) {
+            runCatching {
+                module.hook(successCb)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(AuthSuccessHooker(module))
+                module.log(android.util.Log.INFO, "NCIslandHook", "hooked AuthSession.h() — success callback timestamp enabled")
+            }.onFailure {
+                module.log(android.util.Log.WARN, "NCIslandHook", "hook AuthSession.h failed: $it")
+            }
+        } else {
+            module.log(android.util.Log.WARN, "NCIslandHook", "AuthSession.h() not found (version changed?)")
+        }
     }
 
     /** 认证失败拦截：强制 errorCode=0 并调用成功回调 h() */
     private class AuthBypassHooker(private val module: XposedModule) : XposedInterface.Hooker {
         override fun intercept(chain: XposedInterface.Chain): Any? {
-            val error = chain.args.getOrNull(0) ?: return chain.proceed() // 无错误 = 成功，照常
+            val error = chain.args.getOrNull(0) ?: run {
+                // Dev 8：成功路径入口时间戳（此前静默 proceed，认证耗时无法量化）
+                val t = System.currentTimeMillis()
+                module.log(
+                    android.util.Log.INFO, "NCIslandHook",
+                    "auth success path START t=$t",
+                )
+                cc.ytdttj.noticleaner.keepalive.HookLogSink.log(
+                    cc.ytdttj.noticleaner.keepalive.HookLogSink.systemContextOrNull(),
+                    "auth-START", "t=$t",
+                )
+                return chain.proceed()
+            }
             return runCatching {
                 setIntField(error!!, "a", 0)
                 val success = callNoArg(chain.thisObject, "h")
                 module.log(android.util.Log.INFO, "NCIslandHook", "auth bypassed (errorCode forced to 0)")
+                cc.ytdttj.noticleaner.keepalive.HookLogSink.log(
+                    cc.ytdttj.noticleaner.keepalive.HookLogSink.systemContextOrNull(),
+                    "auth-BYPASSED", "云端认证失败，已强制成功（fail-closed 已被本 hook 兜底）",
+                )
                 success
             }.getOrElse {
                 module.log(android.util.Log.WARN, "NCIslandHook", "auth bypass failed: $it")
                 chain.proceed()
             }
+        }
+    }
+
+    /** 成功回调 h() 时间戳：认证链完成（岛渲染的最后前置条件满足） */
+    private class AuthSuccessHooker(private val module: XposedModule) : XposedInterface.Hooker {
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            val t = System.currentTimeMillis()
+            module.log(
+                android.util.Log.INFO, "NCIslandHook",
+                "auth success callback DONE t=$t — island may render now",
+            )
+            cc.ytdttj.noticleaner.keepalive.HookLogSink.log(
+                cc.ytdttj.noticleaner.keepalive.HookLogSink.systemContextOrNull(),
+                "auth-DONE", "t=$t",
+            )
+            return chain.proceed()
         }
     }
 }

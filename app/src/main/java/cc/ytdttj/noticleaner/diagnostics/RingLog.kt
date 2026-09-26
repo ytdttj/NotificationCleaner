@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit
  */
 object RingLog {
 
-    private const val MAX_FILE_BYTES = 2L * 1024 * 1024
+    private const val MAX_FILE_BYTES = 4L * 1024 * 1024
     private const val RETAIN_MS = 24L * 60 * 60 * 1000
     private const val MAX_STACK_CHARS = 4000
     private const val TRIM_PERIOD_HOURS = 1L

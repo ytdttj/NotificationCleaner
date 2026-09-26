@@ -41,6 +41,19 @@ class ModuleLogProvider : ContentProvider() {
             return null
         }
 
+        // Dev 8：Hook 端日志回流（decision=HOOK_LOG）——SystemUI/xmsf/system_server
+        // 内的关键事件（岛校验/认证/拦截）写环形日志，随诊断导出覆盖 24 小时
+        if (values.getAsString(COL_DECISION) == HOOK_LOG_DECISION) {
+            runCatching {
+                cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                    "[Hook:${values.getAsString(COL_PACKAGE).orEmpty()}] " +
+                        values.getAsString(COL_TITLE).orEmpty() +
+                        (values.getAsString(COL_CONTENT)?.takeIf { it.isNotBlank() }?.let { " | $it" } ?: ""),
+                )
+            }
+            return null
+        }
+
         val entity = NotificationEntity(
             packageName = values.getAsString(COL_PACKAGE).orEmpty(),
             appName = appName(ctx, values.getAsString(COL_PACKAGE).orEmpty()),
@@ -92,6 +105,9 @@ class ModuleLogProvider : ContentProvider() {
         /** Dev 5：模块心跳决策标记（system_server 内 hook 成功后回写，不入库） */
         const val LSP_ALIVE_DECISION = "LSP_ALIVE"
         const val LSP_HEARTBEAT_PREFS = "lsp_heartbeat"
+
+        /** Dev 8：Hook 端日志回流标记（SystemUI/xmsf 进程关键事件 → RingLog，不入库） */
+        const val HOOK_LOG_DECISION = "HOOK_LOG"
 
         const val COL_PACKAGE = "package"
         const val COL_CHANNEL = "channel"

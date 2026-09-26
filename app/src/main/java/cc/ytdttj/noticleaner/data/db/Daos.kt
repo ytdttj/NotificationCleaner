@@ -111,6 +111,10 @@ interface NotificationDao {
     @Query("SELECT * FROM notifications ORDER BY postTime DESC")
     suspend fun exportAll(): List<NotificationEntity>
 
+    /** 诊断导出（Dev 8）：最近 24 小时的通知历史 */
+    @Query("SELECT * FROM notifications WHERE postTime >= :since ORDER BY postTime DESC")
+    suspend fun listSince(since: Long): List<NotificationEntity>
+
     @Query("SELECT DISTINCT packageName, appName FROM notifications")
     suspend fun distinctApps(): List<AppRef>
 }

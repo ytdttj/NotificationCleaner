@@ -46,13 +46,36 @@ object DiagExporter {
         )
         // 1.4.0 Dev 12：环形日志（文件循环存储）——覆盖近 24 小时的全链路事件，
         // 不随进程崩溃/重启丢失（岛内存 trace 与 logcat 均易滚动，2026-09-23 排查实测）
-        out.appendText("\n==== 环形日志（文件循环存储，保留近 24 小时，崩溃/重启不丢失）====\n")
+        // Dev 8：环形日志内已含 [岛] 链路 + [Hook:进程] 事件（canShowFocus/认证/NMS 拦截回流）
+        out.appendText("\n==== 环形日志（文件循环存储，保留近 24 小时，崩溃/重启不丢失；含岛链路与 Hook 回流）====\n")
         out.appendText(
             runCatching { RingLog.dump() }.getOrDefault("(环形日志读取失败)"),
         )
+        // Dev 8：最近 24 小时的通知历史（数据库为准，含 AI 率/决策/学习状态）
+        out.appendText("\n==== 通知历史（最近 24 小时，数据库记录）====\n")
+        out.appendText(runCatching { recentNotifications() }.getOrDefault("(通知历史读取失败)"))
         out.appendText("\n================ logcat dump ================\n")
         out.appendText(dumpLogcat())
         out
+    }
+
+    /** 最近 24 小时通知历史（紧凑行格式） */
+    private suspend fun recentNotifications(): String {
+        val since = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+        val rows = cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao().listSince(since)
+        if (rows.isEmpty()) return "（最近 24 小时无通知记录）\n"
+        val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
+        return buildString {
+            appendLine("时间 | 应用 | 标题 | 决策 | AI率 | 已学习")
+            for (n in rows) {
+                appendLine(
+                    "${fmt.format(Date(n.postTime))} | ${n.appName} | " +
+                        n.title.take(40).replace("\n", " ") + " | ${n.decision} | " +
+                        "${(n.adProbability * 100).toInt()}% | " +
+                        if (n.learned) "是(${if (n.learnLabel == 1) "广告" else "正常"})" else "否",
+                )
+            }
+        }
     }
 
     /** 诊断头：排查所需的静态与动态状态快照 */

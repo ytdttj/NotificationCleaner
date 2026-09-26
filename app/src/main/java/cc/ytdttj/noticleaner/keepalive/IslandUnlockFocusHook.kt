@@ -46,6 +46,8 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
 
     fun onPackageLoaded(param: PackageLoadedParam) {
         val cl = param.defaultClassLoader
+        // Dev 8：Hook 日志回流（canShowFocus/认证时刻进 App 环形日志，随诊断导出）
+        cc.ytdttj.noticleaner.keepalive.HookLogSink.init("com.android.systemui")
         if (!tryHook(cl, "SystemUI 主 CL")) {
             hookPluginFactory(cl)
         }
@@ -119,6 +121,9 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
                         android.util.Log.INFO, "NCIslandHook",
                         "intercept $methodName($argsDump) → ALLOW",
                     )
+                    // Dev 8：回流到 App 环形日志（ctx 取自 hook 到的第一个 Context 参数）
+                    val ctx = chain.args.firstOrNull { it is Context } as? Context
+                    cc.ytdttj.noticleaner.keepalive.HookLogSink.log(ctx, "canShowFocus-ALLOW", "$methodName($argsDump)")
                     return true
                 }
             }
@@ -129,6 +134,8 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
                     android.util.Log.INFO, "NCIslandHook",
                     "intercept $methodName($argsDump) → proceed",
                 )
+                val ctx = chain.args.firstOrNull { it is Context } as? Context
+                cc.ytdttj.noticleaner.keepalive.HookLogSink.log(ctx, "canShowFocus-proceed", "$methodName($argsDump)")
             }
             return chain.proceed()
         }
