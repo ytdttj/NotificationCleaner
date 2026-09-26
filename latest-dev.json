@@ -1,6 +1,6 @@
 {
-  "versionCode": 58,
-  "versionName": "2.0.1 Dev 7",
-  "notes": "2.0.1 Dev 7 发布（versionCode 58）——恶性崩溃修复 + LSPosed 检测全面升级 + 应用内作用域授权\n\n【修复】模块导致 system_server 崩溃循环 / 安全模式（恶性，Dev 5/6 均受影响）\n· 根因：模块在 system_server 启动中调用 ActivityThread.systemMain() 提交激活心跳，\n  二次初始化污染全局状态 → installSystemProviders 拿到残缺类加载器 → FATAL 循环\n· 心跳改为 NMS 首次真实拦截时提交（系统稳定运行后，Context 取自 hook 实例本身）\n· **升级本版后请重启手机，并重新勾选「系统(android)」作用域**\n\n【新增】应用内 LSPosed 作用域授权（libxposed service，借鉴 HyperIsland）\n· 首次打开超级岛支付提醒开关：自动弹 LSPosed 授权框，请求\n  系统界面 + 小米服务框架作用域，批准后提示点「重启岛作用域」立即生效\n· 高级功能「LSPosed 保活」行：缺系统框架作用域时显示\"授权\"按钮，\n  批准后提示重启手机\n\n【增强】LSPosed 激活检测全面升级\n· 标准证据 = libxposed 框架服务绑定（模块启用即绑定，官方 API 零 hack）\n· 岛探测四态文案：作用域就绪 / 未授权 / 心跳兜底 / 无法检测\n· 修复此前\"已激活却显示未激活\"的误报\n\n【增强】历史筛选 App 选择复用规则页选择器（含系统应用，多选）；\n  日期字段改为日历弹窗选择；CSV 导出第一列增加通知时间",
-  "sha256": "18A28492CE29CFFF0E7E621E63A8EEB9E927722EB13C4388322A3EB20BDBCCC3"
+  "versionCode": 59,
+  "versionName": "2.0.1 Dev 8",
+  "notes": "2.0.1 Dev 8 发布（versionCode 59）——诊断日志 24 小时全覆盖（通知 + Hook 回流）+ 上岛延迟定案数据\n\n【增强】诊断导出覆盖最近 24 小时全量\n· Hook 端事件回流：SystemUI 岛校验（canShowFocus）、xmsf 云认证\n  （开始/完成/强制成功）、system_server 拦截，全部写入环形日志，\n  导出诊断不再依赖 LSPosed 管理器日志\n· 新增「通知历史（最近 24 小时）」段：时间/应用/标题/决策/AI率/学习状态\n· 环形日志容量 2MB→4MB×2 代，24 小时覆盖双保险（尺寸轮转 + 时间裁剪）\n\n【诊断结论】上岛延迟已定案（基于 Dev 8 诊断包实测）\n· App 解析提交 16ms / SystemUI 校验 6ms / xmsf 云认证 ~330ms\n· 全链路可控行为 <1s，剩余延迟来自微信通知发送时机与 HyperOS 岛渲染调度，\n  均在系统侧，非 App 可修复\n· 顺带实证：xmsf 云认证偶发失败被认证 hook 强制成功兜底（fail-closed 防线有效）",
+  "sha256": "F0A8E85B7C5B2ACEB40FE685EADF99102A681920BDFC2D6683BBB51D62A2F2BC"
 }
