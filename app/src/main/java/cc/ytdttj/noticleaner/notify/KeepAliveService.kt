@@ -113,6 +113,12 @@ class KeepAliveService : Service() {
 
         // 1.1.13：Doze 免疫的闹钟看门狗 + 亮屏/解锁自愈
         WatchdogReceiver.schedule(this)
+        // Dev 9：保活进程也初始化岛代发通道（App.onCreate 走 ServiceLocator；
+        // 本服务可能在 Application 逻辑跑完前就绪，两条路径都要覆盖）。
+        // 岛在后台场景最依赖这条通道——此时没有 UI 交互，失败用户完全无感。
+        runCatching {
+            cc.ytdttj.noticleaner.notify.island.IslandDispatch.init(this)
+        }
         runCatching {
             registerReceiver(
                 screenReceiver,
@@ -186,14 +192,34 @@ class KeepAliveService : Service() {
         return START_STICKY
     }
 
-    /** 超级岛"已完成"：取消对应通知（岛随通知清除），留下点击痕迹便于诊断 */
+    /**
+     * 超级岛"已完成"（2.2.0 Dev 3 修正）：
+     *
+     * 岛通知有两条来源，取消必须**两条都走**：
+     * - 代发路径（常态）：通知由 SystemUI 进程以 com.android.systemui 身份发出，
+     *   App 的 [NotificationManager.cancel] 按包名隔离 → 对该 id 是**空操作**
+     *   （Dev 2 真机实测：App 打了"已取消"日志，SystemUI 侧从未出现 notification_canceled，
+     *   岛一直不消——用户表现为"点了没反应"）。故广播给 SystemUI 由它自己取消。
+     * - 回退路径（代发未就绪）：通知归本 App，自身 cancel 即生效。
+     */
     private fun handleIslandDismiss(intent: Intent) {
         val id = intent.getIntExtra(EXTRA_ISLAND_NOTIF_ID, -1)
         if (id == -1) return
-        runCatching { getSystemService(NotificationManager::class.java).cancel(id) }
+        val dispatched = cc.ytdttj.noticleaner.notify.island.IslandDispatch.isReady()
+        if (dispatched) {
+            // 代发：取消动作送回 SystemUI 进程执行
+            cc.ytdttj.noticleaner.notify.island.IslandDispatch.requestSystemUiDismiss(this, id)
+        } else {
+            // 回退：通知归本 App，自己取消
+            runCatching { getSystemService(NotificationManager::class.java).cancel(id) }
+        }
         cc.ytdttj.noticleaner.diagnostics.RingLog.log(
             cc.ytdttj.noticleaner.diagnostics.LogModules.ISLAND,
-            "岛通知已完成：用户点击按钮，已取消通知 (id=$id)",
+            if (dispatched) {
+                "岛通知已完成：用户点击按钮，已请求 SystemUI 取消代发通知 (id=$id)"
+            } else {
+                "岛通知已完成：用户点击按钮，已取消通知 (id=$id, 回退路径)"
+            },
         )
     }
 

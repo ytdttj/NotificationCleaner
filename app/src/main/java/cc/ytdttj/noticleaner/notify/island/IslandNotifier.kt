@@ -24,7 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * - VISIBILITY_SECRET：岛展示但通知栏无痕；测试路径 showNotification=true
  *   时 PRIVATE 留痕，判别认证拒绝
  *
- * 触发条件（三者同时满足）：包名白名单 + 文本含币种特征金额 + 通知已放行。
+ * 触发条件（2026-10-06 起五者同时满足）：包名白名单 + 文本含币种特征金额 +
+ * 方向可判定（非 UNKNOWN）+ 微信需含支付动作词（其余白名单包不要求）+ 通知已放行。
  * 所有路径静默降级，绝不影响通知净化主流程。
  */
 object IslandNotifier {
@@ -116,11 +117,28 @@ object IslandNotifier {
     private val nextId = AtomicInteger(NOTIF_ID_FIRST)
 
     /**
+     * 微信支付场景关键词（2026-10-06 修复"好友分享小程序营销文案误上岛"）：
+     * com.tencent.mm 是聊天 App，聊天消息里任何"XX元"都会命中金额正则
+     * （实测 2026-10-06 09:34 "领10687元加价券包" 上岛）。白名单内只有支付动作
+     * 类通知才该上岛——标题+正文不含这些词的一律视为聊天/分享，跳过。
+     */
+    private val WECHAT_PAYMENT_WORDS = listOf(
+        "红包", "转账", "收款", "付款", "支付", "退款", "到账", "零钱", "佣金", "扣款", "消费", "商户",
+    )
+
+    /** 微信通知是否具备支付场景上下文（聊天文本命中任何支付动作词才算） */
+    private fun isWeChatPaymentContext(title: String, content: String): Boolean {
+        val text = "$title\n$content"
+        return WECHAT_PAYMENT_WORDS.any { text.contains(it) }
+    }
+
+    /**
      * 放行通知的支付信息上岛。同步快速路径（解析/去重），
      * 发送走 [IslandPoster]（clearBeforePost + visibility）。
      */
     fun maybePost(context: Context, sbn: StatusBarNotification, title: String, content: String) {
-        // Dev 16：初始化代发客户端（幂等——READY 监听 + PING 询问）
+        // Dev 9：代发客户端已在 App.onCreate / KeepAliveService.onCreate 提前握手，
+        // 这里保留调用只为覆盖"未经 Application 逻辑的冷启动路径"（幂等，可重试）。
         cc.ytdttj.noticleaner.notify.island.IslandDispatch.init(context)
         // Dev 12 延迟排查：记录"我们开始处理这条原始通知"的时刻，
         // 与 sbn.postTime（微信/银行发出通知的时刻）相减 = 系统投递滞后
@@ -159,6 +177,21 @@ object IslandNotifier {
             return
         }
         IslandTrace.log("金额解析: ${payment.capsuleText.trim()} 方向=${payment.direction} 折算=${payment.convertedCnyText ?: "无"} 原文='${title.take(16)}'/'${content.take(48)}'")
+
+        // 2026-10-06 防误上岛三道闸（当日 09:34 微信券包 10687 / 10-05 21:23 支付宝
+        // 亲情卡余额 9968.90 两起误上岛排查）：
+        // 闸 1——方向未知不上岛：金额解析有结果但全文找不到任何收/支语义，
+        // 大概率是营销文案里的"XX元"（领10687元券包），宁可漏不可错。
+        if (payment.direction == PaymentExtractor.Direction.UNKNOWN) {
+            IslandTrace.log("✗ 方向未知（无收/支语义），跳过上岛")
+            return
+        }
+        // 闸 2——微信非支付场景不上岛：聊天/好友分享里的金额（"领10687元加价券包"）
+        // 没有支付动作词，直接跳过；红包/转账/收款/微信支付服务通知均含关键词不受影响。
+        if (pkg == "com.tencent.mm" && !isWeChatPaymentContext(title, content)) {
+            IslandTrace.log("✗ 微信非支付场景（聊天/分享文本无支付动作词），跳过上岛")
+            return
+        }
 
         val sig = "$pkg|${title.hashCode()}|${content.hashCode()}"
         val now = System.currentTimeMillis()
@@ -218,7 +251,7 @@ object IslandNotifier {
         val postedAt = System.currentTimeMillis()
         IslandTrace.log(
             "岛通知已提交系统 (id=$id, " +
-                (if (dispatched) "SystemUI 代发" else "LSPosed 放行认证") +
+                (if (dispatched) "SystemUI 代发·待回执" else "LSPosed 放行认证") +
                 ", srcPost=${cc.ytdttj.noticleaner.diagnostics.DiagTime.stamp(sbn.postTime)}" +
                 ", lag=${cc.ytdttj.noticleaner.diagnostics.DiagTime.lagText(postedAt - sbn.postTime)}" +
                 ", took=${postedAt - receivedAt}ms)",

@@ -1,8 +1,6 @@
 package cc.ytdttj.noticleaner.keepalive
 
 import io.github.libxposed.api.XposedInterface
-import io.github.libxposed.api.XposedModule
-import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 
 /**
  * xmsf 焦点通知认证解锁（island 分支，islandv2plan P3）。
@@ -30,18 +28,26 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
  *   但岛不渲染——SystemUI 渲染岛依赖完整认证会话流程的完成事件，仅让 innerAuth
  *   返回 Bundle 不够。认证 0.4s 是岛流程固定开销（远小于系统投递积压），不再尝试。
  * - 已精简：方法 dump、调用序列观察、构造器观察、栈回溯、短路、Bundle 缓存全部移除
+ *
+ * 2.2.0 Dev 1 热重载：b/h 两个 hook 经 [LspEntry.hookOnce] 携带稳定 id 注册
+ * （xmsf:auth-b / xmsf:auth-h），重载时按 id 原子 replaceHook。
+ * 本类无静态状态、无引用存储（Context 现场取用），是热重载成本最低的作用域。
  */
-class XmsfUnlockAuthHook(private val module: XposedModule) {
+class XmsfUnlockAuthHook(private val module: LspEntry) {
 
     companion object {
         private const val AUTH_SESSION_CLASS = "com.xiaomi.xms.auth.AuthSession"
+
+        /** 热重载：按 id 重建 Hooker（replaceHook 用） */
+        fun hookerForId(module: LspEntry, id: String): XposedInterface.Hooker? = when (id) {
+            "xmsf:auth-b" -> AuthBypassHooker(module)
+            "xmsf:auth-h" -> AuthSuccessHooker(module)
+            else -> null
+        }
     }
 
-    fun onPackageLoaded(param: PackageLoadedParam) {
-        val cl = param.defaultClassLoader
-        // Dev 8：Hook 日志回流（认证时刻进 App 环形日志）；xmsf 进程无直接 Application，
-        // 读现有 ActivityThread 的 SystemContext（仅 getter，安全）
-        cc.ytdttj.noticleaner.keepalive.HookLogSink.init("com.xiaomi.xmsf")
+    /** 安装（首次加载与热重载补装共用，幂等——重复 executable 被 hookOnce 去重） */
+    fun install(cl: ClassLoader) {
         val authSession = runCatching { cl.loadClass(AUTH_SESSION_CLASS) }.getOrNull() ?: run {
             module.log(android.util.Log.WARN, "NCIslandHook", "AuthSession not found in xmsf CL (version changed?)")
             return
@@ -53,37 +59,26 @@ class XmsfUnlockAuthHook(private val module: XposedModule) {
             module.log(android.util.Log.WARN, "NCIslandHook", "AuthSession.b(error) not found (xmsf version changed?)")
             return
         }
-        runCatching {
-            module.hook(target)
-                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                .intercept(AuthBypassHooker(module))
+        if (module.hookOnce(target, "xmsf:auth-b", AuthBypassHooker(module))) {
             module.log(android.util.Log.INFO, "NCIslandHook", "hooked AuthSession.b(error) — focus auth unlocked")
-        }.onFailure {
-            module.log(android.util.Log.WARN, "NCIslandHook", "hook AuthSession.b failed: $it")
         }
         // Dev 8：成功回调 h() 时间戳（岛渲染前的最后一步，量化认证段耗时）
         val successCb = authSession.declaredMethods
             .filter { it.name == "h" && it.parameterCount == 0 }
             .firstOrNull()
-        if (successCb != null) {
-            runCatching {
-                module.hook(successCb)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(AuthSuccessHooker(module))
-                module.log(android.util.Log.INFO, "NCIslandHook", "hooked AuthSession.h() — success callback timestamp enabled")
-            }.onFailure {
-                module.log(android.util.Log.WARN, "NCIslandHook", "hook AuthSession.h failed: $it")
-            }
-        } else {
+        if (successCb == null) {
             module.log(android.util.Log.WARN, "NCIslandHook", "AuthSession.h() not found (version changed?)")
+            return
+        }
+        if (module.hookOnce(successCb, "xmsf:auth-h", AuthSuccessHooker(module))) {
+            module.log(android.util.Log.INFO, "NCIslandHook", "hooked AuthSession.h() — success callback timestamp enabled")
         }
     }
 
     /** 认证失败拦截：强制 errorCode=0 并调用成功回调 h() */
-    private class AuthBypassHooker(private val module: XposedModule) : XposedInterface.Hooker {
+    private class AuthBypassHooker(private val module: LspEntry) : XposedInterface.Hooker {
         override fun intercept(chain: XposedInterface.Chain): Any? {
-            val ctx = cc.ytdttj.noticleaner.keepalive.HookLogSink
-                .contextOf(chain.args, chain.thisObject)
+            val ctx = HookLogSink.contextOf(chain.args, chain.thisObject)
             val error = chain.args.getOrNull(0) ?: run {
                 // Dev 8：成功路径入口时间戳（此前静默 proceed，认证耗时无法量化）
                 val t = System.currentTimeMillis()
@@ -91,7 +86,7 @@ class XmsfUnlockAuthHook(private val module: XposedModule) {
                     android.util.Log.INFO, "NCIslandHook",
                     "auth success path START t=$t",
                 )
-                cc.ytdttj.noticleaner.keepalive.HookLogSink.log(ctx, "auth-START", "t=$t")
+                HookLogSink.log(ctx, "auth-START", "t=$t")
                 return chain.proceed()
             }
             return runCatching {
@@ -100,7 +95,7 @@ class XmsfUnlockAuthHook(private val module: XposedModule) {
                 setIntField(error!!, "a", 0)
                 val success = callNoArg(chain.thisObject, "h")
                 module.log(android.util.Log.INFO, "NCIslandHook", "auth bypassed (errorCode forced to 0) $errInfo")
-                cc.ytdttj.noticleaner.keepalive.HookLogSink.log(
+                HookLogSink.log(
                     ctx,
                     "auth-BYPASSED",
                     "云端认证失败已强制成功（fail-closed 兜底）：$errInfo",
@@ -114,16 +109,15 @@ class XmsfUnlockAuthHook(private val module: XposedModule) {
     }
 
     /** 成功回调 h() 时间戳：认证链完成（岛渲染的最后前置条件满足） */
-    private class AuthSuccessHooker(private val module: XposedModule) : XposedInterface.Hooker {
+    private class AuthSuccessHooker(private val module: LspEntry) : XposedInterface.Hooker {
         override fun intercept(chain: XposedInterface.Chain): Any? {
             val t = System.currentTimeMillis()
             module.log(
                 android.util.Log.INFO, "NCIslandHook",
                 "auth success callback DONE t=$t — island may render now",
             )
-            cc.ytdttj.noticleaner.keepalive.HookLogSink.log(
-                cc.ytdttj.noticleaner.keepalive.HookLogSink
-                    .contextOf(chain.args, chain.thisObject),
+            HookLogSink.log(
+                HookLogSink.contextOf(chain.args, chain.thisObject),
                 "auth-DONE", "t=$t",
             )
             return chain.proceed()

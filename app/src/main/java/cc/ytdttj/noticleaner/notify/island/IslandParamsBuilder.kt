@@ -26,6 +26,15 @@ object IslandParamsBuilder {
     private const val CHANNEL_ID = "island_payment"
     private const val PIC_APP = "miui.focus.pic_app"
 
+    /**
+     * 岛图标降采样边长（px，Dev 9）。
+     *
+     * 96×96 ARGB_8888 = 36KB，经 [cc.ytdttj.noticleaner.notify.island.IslandDispatch]
+     * 的跨进程代发广播传输时 parcel 总量可稳在 Binder 安全范围内；HyperOS 岛上的
+     * 胶囊/展开态图标实际显示尺寸远小于此，视觉无损。
+     */
+    private const val ICON_PX = 96
+
     /** 支出红 / 收入绿（展开态金额高亮） */
     private const val COLOR_OUT = "#D94B30"
     private const val COLOR_IN = "#2E9E5B"
@@ -173,11 +182,15 @@ object IslandParamsBuilder {
             } ?: runCatching {
                 context.packageManager.getApplicationIcon(context.packageName)
             }.getOrNull()
-            val icon = drawableToBitmap(drawable)?.let { android.graphics.drawable.Icon.createWithBitmap(it) }
-            icon?.let {
-                putParcelable(PIC_APP, it)
-                putParcelable("miui.focus.pic_ticker", it)
-            }
+            // Dev 9：图标**必须**降采样后再进 Bundle。原实现直接塞 getApplicationIcon
+            // 的原始位图（部分银行 App 图标 192×192 ARGB_8888 = 147KB），而代发广播要
+            // 把整个 extras 跨进程传 给 SystemUI——2026-10-04 实测单条 parcel 达
+            // 329624 字节，BroadcastQueue 直接抛 TransactionTooLargeException 把广播丢掉，
+            // 岛不上（且 App 侧无回执，仍误记「已提交」）。144×144 = 82KB，仍偏大；
+            // 这里压到 96×96（36KB）并只保留一份，parcel 稳定在几十 KB 量级。
+            val icon = drawableToBitmap(drawable, ICON_PX)
+                ?.let { android.graphics.drawable.Icon.createWithBitmap(it) }
+            icon?.let { putParcelable(PIC_APP, it) }
         }
 
         val extras = Bundle().apply {
@@ -212,12 +225,24 @@ object IslandParamsBuilder {
         return builder.build()
     }
 
-    /** 原 App 图标转 Bitmap（跨包资源图标在 SystemUI 侧解析不可靠，统一落位图） */
-    fun drawableToBitmap(drawable: Drawable?): Bitmap? {
+    /**
+     * 原 App 图标转 Bitmap（跨包资源图标在 SystemUI 侧解析不可靠，统一落位图）。
+     *
+     * [targetPx] > 0 时等比降采样到该边长（Dev 9：控制代发广播的 parcel 体积，
+     * 见 [ICON_PX] 注释）；<= 0 表示沿用原始尺寸。
+     */
+    fun drawableToBitmap(drawable: Drawable?, targetPx: Int = 0): Bitmap? {
         val d = drawable ?: return null
-        if (d is BitmapDrawable && d.bitmap != null) return d.bitmap
-        val w = d.intrinsicWidth.takeIf { it > 0 } ?: 96
-        val h = d.intrinsicHeight.takeIf { it > 0 } ?: 96
+        if (d is BitmapDrawable && d.bitmap != null && targetPx <= 0) return d.bitmap
+        val w0 = d.intrinsicWidth.takeIf { it > 0 } ?: 96
+        val h0 = d.intrinsicHeight.takeIf { it > 0 } ?: 96
+        val (w, h) = if (targetPx > 0 && (w0 > targetPx || h0 > targetPx)) {
+            // 等比缩小（短边为目标边长），不放大——避免小图被插值糊掉
+            val scale = targetPx.toFloat() / minOf(w0, h0)
+            (w0 * scale).toInt().coerceAtLeast(1) to (h0 * scale).toInt().coerceAtLeast(1)
+        } else {
+            w0 to h0
+        }
         return runCatching {
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val canvas = android.graphics.Canvas(bmp)

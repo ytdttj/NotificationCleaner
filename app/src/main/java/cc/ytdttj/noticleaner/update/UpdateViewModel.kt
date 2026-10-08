@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import java.io.File
 import java.net.HttpURLConnection
@@ -54,6 +55,22 @@ class UpdateViewModel : ViewModel() {
     private val _channel = MutableStateFlow(UpdateChannel.STABLE)
     val channel: StateFlow<UpdateChannel> = _channel
 
+    /**
+     * 2.2.0 Dev 4：通道是否已从 DataStore 读出。
+     *
+     * **修复「通知点击进 App 不弹更新窗」**：通道初值是 STABLE，而真实通道在 [init]
+     * 里异步读 DataStore 才拿到。冷启动（进程被系统回收后从通知进入）时
+     * `checkUpdate()` 往往在 DataStore 读出之前就跑完了，于是：
+     *   Dev 通道用户 → 误用 STABLE 去查 Gitee 正式版 → versionCode(72) ≤ 当前(75)
+     *   → 判为「已是最新」静默返回；而用户手动进设置再点检查时通道已就绪，
+     *   查 Dev 通道的 GitHub latest-dev.json → 正确提示新版本。
+     * 这正是「必须手动进设置才弹窗」的成因。
+     *
+     * 修法：[checkUpdate] 内先 `awaitChannel()` 再取通道，消灭竞态。
+     */
+    private val _channelLoaded = MutableStateFlow(false)
+    val channelLoaded: StateFlow<Boolean> = _channelLoaded
+
     private var downloadJob: Job? = null
 
     /** 上次检查成功的来源（gitee/github），下载优先使用同一镜像（1.1.10） */
@@ -67,7 +84,14 @@ class UpdateViewModel : ViewModel() {
             }.getOrNull()
             _channel.value = runCatching { UpdateChannel.valueOf(saved ?: "STABLE") }
                 .getOrDefault(UpdateChannel.STABLE)
+            _channelLoaded.value = true
         }
+    }
+
+    /** 等待通道读出（最多 3s 兜底，防止 DataStore 异常时永久挂起检查） */
+    private suspend fun awaitChannel(): UpdateChannel {
+        withTimeoutOrNull(3_000) { _channelLoaded.first { it } }
+        return _channel.value
     }
 
     /** 切换更新通道：立即生效并持久化 */
@@ -92,8 +116,9 @@ class UpdateViewModel : ViewModel() {
         if (_state.value is UpdateState.Checking) return
         downloadJob?.cancel()
         _state.value = UpdateState.Checking
-        val ch = _channel.value
         viewModelScope.launch {
+            // 2.2.0 Dev 4：必须等通道从 DataStore 读出再查，否则会用默认 STABLE 误判
+            val ch = awaitChannel()
             val result = UpdateChecker.checkLatest(ch)
             _state.value = when {
                 result == null -> UpdateState.Error("检查失败：无法访问${if (ch == UpdateChannel.STABLE) " Gitee" else " GitHub"} 更新源")
@@ -103,11 +128,18 @@ class UpdateViewModel : ViewModel() {
                     cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                         cc.ytdttj.noticleaner.diagnostics.LogModules.UPDATE,
                         "发现新版本 ${result.release.versionName} (vc${result.release.versionCode}) " +
-                            "来源=${result.source} 当前=vc${BuildConfig.VERSION_CODE}",
+                            "来源=${result.source} 通道=$ch 当前=vc${BuildConfig.VERSION_CODE}",
                     )
                     UpdateState.Available(result.release)
                 }
-                else -> UpdateState.UpToDate
+                else -> {
+                    cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                        cc.ytdttj.noticleaner.diagnostics.LogModules.UPDATE,
+                        "已是最新：通道=$ch 远端=vc${result.release.versionCode} " +
+                            "当前=vc${BuildConfig.VERSION_CODE}",
+                    )
+                    UpdateState.UpToDate
+                }
             }
         }
     }
@@ -121,6 +153,8 @@ class UpdateViewModel : ViewModel() {
         val apkName = "NotiCleaner-${release.versionName.replace(" ", "")}.apk"
         val giteeUrl = BuildConfig.UPDATE_APK_GITEE + "/" + tag + "/" + apkName
         val githubUrl = BuildConfig.UPDATE_APK_GITHUB + "/" + tag + "/" + apkName
+        // 通道在这里读是安全的：Available 状态只可能由 checkUpdate 产出，而它已 awaitChannel()
+        // 等待通道就绪（Dev 4 修复），不存在"用默认 STABLE 下载 Dev 包"的竞态。
         val candidates = when (_channel.value) {
             UpdateChannel.DEV -> listOf("GitHub" to githubUrl)
             UpdateChannel.STABLE ->

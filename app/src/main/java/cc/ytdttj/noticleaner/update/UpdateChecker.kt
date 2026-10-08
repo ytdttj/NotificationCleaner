@@ -24,7 +24,7 @@ enum class UpdateChannel(val label: String) {
  * 更新检查（1.2.2 自 UpdateViewModel 抽出，供应用内检查与后台 Worker 共用）。
  * 1.3.2 更新分流：不再双源排序取首个成功——按更新通道单源获取：
  * - 稳定版（x.x.x）→ Gitee（正式 Release 的 latest.json）
- * - Dev 版（x.x.x Dev N）→ GitHub（Dev Release 的 latest.json）
+ * - Dev 版（x.x.x Dev N）→ GitHub（dev 分支的 latest-dev.json，2.2.0 Dev 2 起）
  * 显式 UA + 手动跟随 3xx 重定向 + 剥离 BOM（与 1.1.4 网络栈语义一致）。
  */
 object UpdateChecker {

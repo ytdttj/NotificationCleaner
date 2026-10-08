@@ -163,7 +163,9 @@ class MainActivity : ComponentActivity() {
                         updateVm.checkUpdate()
                     }
                 }
-                cc.ytdttj.noticleaner.ui.update.UpdatePromptDialog(vm = updateVm, onDismiss = {})
+                // 2.2.0 Dev 4：权限弹窗先声明 → 更新弹窗在其上层。
+                // 从通知点击进 App 时 entryPermissionCheck(showAlert=true) 会弹权限提醒，
+                // 若更新弹窗被它压住，用户会以为"没弹窗"（实际弹了但看不见）。
                 if (alertVisible && (lostListener || lostBattery || lostNotifications)) {
                     PermissionLostDialog(
                         lostListener = lostListener,
@@ -172,6 +174,7 @@ class MainActivity : ComponentActivity() {
                         onDismiss = { alertVisible = false },
                     )
                 }
+                cc.ytdttj.noticleaner.ui.update.UpdatePromptDialog(vm = updateVm, onDismiss = {})
             }
         }
     }

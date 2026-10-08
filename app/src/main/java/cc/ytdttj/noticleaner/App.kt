@@ -83,6 +83,13 @@ object ServiceLocator {
         moduleSync = ModuleConfigSync(app, db.ruleDao(), db.whitelistDao())
         moduleSync.start(appScope)
         CleanerListenerService.initScope(app)
+        // Dev 9：岛代发通道必须在进程启动时就握手，不能等第一条通知。
+        // 此前 init() 只在 IslandNotifier.maybePost 里被调（lazy init），而 init 后
+        // 紧接着读 ready（READY 广播异步，必然还是 false）→ 每个进程生命周期的
+        // **第一条岛通知 100% 走回退路径**。这里提前到启动期，让 READY 在首条通知前就位。
+        runCatching {
+            cc.ytdttj.noticleaner.notify.island.IslandDispatch.init(app)
+        }
     }
 
     /** LSPosed 框架服务绑定（模块激活）：注入同步器并补推 delta */

@@ -2,8 +2,6 @@ package cc.ytdttj.noticleaner.keepalive
 
 import android.content.Context
 import io.github.libxposed.api.XposedInterface
-import io.github.libxposed.api.XposedModule
-import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -21,8 +19,12 @@ import java.util.WeakHashMap
  *   hook PluginInstance$PluginFactory.createPluginContext 拿到插件 CL 后再挂
  *
  * 仅当调用参数中出现 island 版包名时返回 true，其余调用照常 proceed。
+ *
+ * 2.2.0 Dev 1 热重载：全部 hook 经 [LspEntry.hookOnce] 携带稳定 id 注册
+ * （focus:main:<class>.<method> / focus:plugin-factory），重载时按 id 原子 replaceHook；
+ * [hookedLoaders] 是弱引用随旧代消亡，无需跨代迁移。
  */
-class IslandUnlockFocusHook(private val module: XposedModule) {
+class IslandUnlockFocusHook(private val module: LspEntry) {
 
     companion object {
         private const val TARGET_PKG = cc.ytdttj.noticleaner.BuildConfig.APPLICATION_ID
@@ -42,12 +44,17 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
 
         private val hookedLoaders =
             Collections.newSetFromMap(WeakHashMap<ClassLoader, Boolean>())
+
+        /** 热重载：按 id 重建 Hooker（replaceHook 用）。id 即首次注册时记录的方法全名。 */
+        fun hookerForId(module: LspEntry, id: String): XposedInterface.Hooker? = when {
+            id == "focus:plugin-factory" -> PluginFactoryHooker(IslandUnlockFocusHook(module))
+            id.startsWith("focus:main:") -> AllowFocusHooker(module, id.removePrefix("focus:main:"))
+            else -> null
+        }
     }
 
-    fun onPackageLoaded(param: PackageLoadedParam) {
-        val cl = param.defaultClassLoader
-        // Dev 8：Hook 日志回流（canShowFocus/认证时刻进 App 环形日志，随诊断导出）
-        cc.ytdttj.noticleaner.keepalive.HookLogSink.init("com.android.systemui")
+    /** 安装（首次加载与热重载补装共用，幂等——重复 executable 被 hookOnce 去重） */
+    fun install(cl: ClassLoader) {
         if (!tryHook(cl, "SystemUI 主 CL")) {
             hookPluginFactory(cl)
         }
@@ -63,17 +70,13 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
             val clazz = runCatching { cl.loadClass(name) }.getOrNull() ?: continue
             for (m in clazz.declaredMethods) {
                 if (m.name in CANDIDATE_METHODS && m.returnType == Boolean::class.javaPrimitiveType) {
-                    runCatching {
-                        module.hook(m)
-                            .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                            .intercept(AllowFocusHooker(module, "$name.${m.name}"))
+                    val id = "focus:main:$name.${m.name}"
+                    if (module.hookOnce(m, id, AllowFocusHooker(module, "$name.${m.name}"))) {
                         hooked++
                         module.log(
                             android.util.Log.INFO, "NCIslandHook",
                             "hooked $name.${m.name}(${m.parameterTypes.joinToString { it.simpleName }})",
                         )
-                    }.onFailure { t ->
-                        module.log(android.util.Log.WARN, "NCIslandHook", "hook $name.${m.name} failed: $t")
                     }
                 }
             }
@@ -95,11 +98,7 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
             return
         }
         for (m in factory.declaredMethods.filter { it.name == "createPluginContext" }) {
-            runCatching {
-                module.hook(m)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(PluginFactoryHooker(this))
-            }
+            module.hookOnce(m, "focus:plugin-factory", PluginFactoryHooker(this))
         }
         module.log(android.util.Log.INFO, "NCIslandHook", "plugin factory hooked, waiting for focus plugin CL")
     }
@@ -109,7 +108,7 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
      * 其余调用照常 proceed，不影响其他应用。
      * 每次命中相关方法时 dump 方法名+参数形态到模块日志，用于诊断校验链。
      */
-    private class AllowFocusHooker(private val module: XposedModule, private val methodName: String) :
+    private class AllowFocusHooker(private val module: LspEntry, private val methodName: String) :
         XposedInterface.Hooker {
         override fun intercept(chain: XposedInterface.Chain): Any? {
             val argsDump = chain.args.joinToString(",") { a ->
@@ -123,7 +122,7 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
                     )
                     // Dev 8：回流到 App 环形日志（ctx 取自 hook 到的第一个 Context 参数）
                     val ctx = chain.args.firstOrNull { it is Context } as? Context
-                    cc.ytdttj.noticleaner.keepalive.HookLogSink.log(ctx, "canShowFocus-ALLOW", "$methodName($argsDump)")
+                    HookLogSink.log(ctx, "canShowFocus-ALLOW", "$methodName($argsDump)")
                     return true
                 }
             }
@@ -135,7 +134,7 @@ class IslandUnlockFocusHook(private val module: XposedModule) {
                     "intercept $methodName($argsDump) → proceed",
                 )
                 val ctx = chain.args.firstOrNull { it is Context } as? Context
-                cc.ytdttj.noticleaner.keepalive.HookLogSink.log(ctx, "canShowFocus-proceed", "$methodName($argsDump)")
+                HookLogSink.log(ctx, "canShowFocus-proceed", "$methodName($argsDump)")
             }
             return chain.proceed()
         }

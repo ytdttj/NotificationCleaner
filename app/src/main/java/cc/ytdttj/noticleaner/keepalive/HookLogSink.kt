@@ -79,6 +79,16 @@ object HookLogSink {
     }.getOrNull()
 
     /**
+     * 当前进程的 Application Context（2.2.0 Dev 1 热重载用）。
+     * SystemUI 等正常 app 进程有 Application；xmsf :services 等服务进程可能为 null。
+     * 仅 getter 反射，不触碰全局状态（Dev 5 教训：绝不在 hook 流程外二次初始化 ActivityThread）。
+     */
+    fun currentApplicationOrNull(): Context? = runCatching {
+        Class.forName("android.app.ActivityThread")
+            .getMethod("currentApplication").invoke(null) as? Context
+    }.getOrNull()
+
+    /**
      * 从 hook 现场尽力挖一个 Context：① 参数里的 Context ② thisObject 的 mContext 字段
      * （含父类）③ [systemContextOrNull()]。都失败返回 null（调用方按丢弃处理并计数）。
      */
