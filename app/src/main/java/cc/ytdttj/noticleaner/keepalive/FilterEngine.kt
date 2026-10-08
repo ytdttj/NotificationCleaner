@@ -52,6 +52,10 @@ internal class FilterEngine {
     /** 预编译规则快照（config.rules 变化时重建） */
     @Volatile private var compiledRules: List<CompiledModuleRule> = emptyList()
 
+    /** 模型未就绪告警限频时间戳（2.2.0 Dev 10；避免高频入队时刷屏） */
+    @Volatile private var lastModelWarnAt = 0L
+
+
     private class CompiledModuleRule(
         val packageName: String,
         val conditions: List<CompiledCondition>,
@@ -107,7 +111,12 @@ internal class FilterEngine {
             return null
         }
         if (!cfg.interceptMode) return null // 观察模式：入队走 NLS 原路径记录
-        val m = model ?: return null
+        val m = model ?: run {
+            // 2.2.0 Dev 10：此前此处**静默 return null（放行）**，导致"hook 装着、不报错、
+            // 却一条都没拦"在日志上查无痕迹（20261005 排查只能靠反证定性）。降级必须可见。
+            warnModelNotReady()
+            return null
+        }
 
         val channel = notification.channelId.orEmpty()
         val chKey = if (channel.isNotEmpty()) FeatureHasher.channelKey(pkg, channel) else null
@@ -231,6 +240,24 @@ internal class FilterEngine {
         return base
     }
 
+    /**
+     * 2.2.0 Dev 10：模型未就绪 → 本引擎退化为"全部放行"时的**显式告警**（限频 5 分钟）。
+     *
+     * 排查教训（20261005）：`decide()` 的降级分支以往全是静默 `return null`，
+     * 于是"入队拦截 hook 已安装"与"它其实一条都没拦"在日志上长得一模一样，
+     * 只能靠反证定性。任何会让功能整体失效的降级，都必须留下可检索的痕迹。
+     */
+    private fun warnModelNotReady() {
+        val now = System.currentTimeMillis()
+        if (now - lastModelWarnAt < MODEL_WARN_INTERVAL_MS) return
+        lastModelWarnAt = now
+        android.util.Log.w(
+            "NCWatch",
+            "module model NOT ready -> enqueue filter is PASS-THROUGH " +
+                "(deltaV=${config.deltaVersion}, baseLoadFailed=$baseLoadFailed)",
+        )
+    }
+
     /** MIUI：通知可能由系统框架代发，extraNotification.targetPkg 才是真实包名（借鉴 ref/Notice Xiaomi.kt） */
     private fun resolvePackage(pkg: String, notification: Notification): String {
         // P0-2：反射结果缓存（system_server 内 Notification 类唯一，缓存安全）。
@@ -270,6 +297,9 @@ internal class FilterEngine {
     companion object {
         private const val SELF_PKG = "cc.ytdttj.noticleaner"
         private const val MODEL_RESOURCE = "model/model.bin"
+
+        /** 2.2.0 Dev 10：模型未就绪告警的限频间隔 */
+        private const val MODEL_WARN_INTERVAL_MS = 5 * 60 * 1000L
 
         /** Dev 11：delta 未就绪时的退避重试（最多 3 次：1s / 3s / 8s） */
         private const val DELTA_RETRY_MAX = 3

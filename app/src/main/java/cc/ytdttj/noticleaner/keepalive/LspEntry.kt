@@ -67,6 +67,7 @@ class LspEntry : XposedModule() {
     override fun onSystemServerStarting(param: SystemServerStartingParam) {
         hookActiveServices(param.classLoader)
         hookNotificationManagerService(param.classLoader)
+        hookGreezeExempt(param.classLoader)
     }
 
     // ==================== 热重载（API 102，仅 SystemUI / xmsf 生效） ====================
@@ -378,18 +379,188 @@ class LspEntry : XposedModule() {
             return blockedResult(chain.executable as? Method)
         }
 
-        private fun nmsContext(service: Any): android.content.Context? = try {
-            val m = service.javaClass.getMethod("getContext")
-            m.invoke(service) as? android.content.Context
-        } catch (_: Throwable) {
-            try {
-                val f = service.javaClass.getField("mContext")
-                f.get(service) as? android.content.Context
+        private fun nmsContext(service: Any): android.content.Context? =
+            HookLogSink.contextOf(null, service)
+
+    }
+
+    // ---- Hook 组 3：Greeze 冻结豁免（system_server——不可热重载，维持冷路径） ----
+
+    /**
+     * 2.2.0 Dev 10：HyperOS 后台冻结（`com.miui.server.greeze`）的**包级豁免**。
+     *
+     * **为什么需要**（20261005 真机日志，见《通知延迟根因诊断报告》）：
+     * HyperOS 灭屏后由 `GreezeManagerService` 冻结本应用进程，NLS 回调无法投递，
+     * 连 `SCREEN_ON` / `USER_PRESENT` 广播都被 `Greezer Denial` 拦成 cached broadcast，
+     * 积压通知要等系统主动解冻才 FIFO 补投——24h 实测 lag 中位 189s、最大 9.8h。
+     * 既有保活 hook（拦 `ActiveServices.stopService*`）防的是"进程**被杀**"，
+     * 与"进程**被冻**"是正交机制，故对它完全无效。
+     *
+     * **策略（只豁免自身，零全局影响）**：
+     * 1. 目标 [GREEZE_CLASS]，反射枚举"动作型 freeze* 且参数含 int(uid)"的方法；
+     * 2. 命中自身 uid → 按**返回类型**给"豁免值"：
+     *    - `String` → `"whiteapp"`（日志中 `freezeUid uid=N return:whiteapp|WIDGET_APP`
+     *      两种书写风格并存，判定其 return 即"豁免理由"字符串常量）
+     *    - `enum`   → 取名字含 WHITE / VISIBLE / SKIP / NONE 的常量
+     *    - `void`   → 跳过执行（返回 null 即"什么都没做"）
+     *    - **其它类型 → 不干预**（照常 proceed）
+     * 3. 未命中 / 任何异常 → 一律 proceed（PROTECTIVE + 内层 runCatching 双保险）。
+     *
+     * **安全性优先**：宁可漏豁免一个方法，也绝不产生一次类型不符的返回值——
+     * system_server 内一次类型错误就可能触发重启循环（参见 Dev 5 的 systemMain 事故）。
+     */
+    private fun hookGreezeExempt(classLoader: ClassLoader) {
+        try {
+            val clazz = runCatching { Class.forName(GREEZE_CLASS, false, classLoader) }.getOrNull()
+            if (clazz == null) {
+                log(Log.INFO, TAG, "greeze: class absent on this ROM, skip exemption hook")
+                return
+            }
+            HookLogSink.init("system_server")
+            val hooker = GreezeExemptHooker(this)
+            var hooked = 0
+            for (m in clazz.declaredMethods) {
+                if (!isFreezeCandidate(m)) continue
+                runCatching {
+                    hook(m).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(hooker)
+                }.onSuccess {
+                    hooked++
+                    log(
+                        Log.INFO, TAG,
+                        "greeze target: ${m.name}(" +
+                            m.parameterTypes.joinToString(",") { it.simpleName } +
+                            ") -> ${m.returnType.simpleName}",
+                    )
+                }.onFailure { log(Log.WARN, TAG, "greeze hook ${m.name} failed: $it") }
+            }
+            log(Log.INFO, TAG, "GreezeManagerService hooked: $hooked methods")
+        } catch (t: Throwable) {
+            log(Log.WARN, TAG, "greeze hook init failed: $t")
+        }
+    }
+
+    /**
+     * 候选方法筛选：**动作型** freeze 方法 + 参数含 `int`（uid）。
+     *
+     * 排除三类，避免误伤：
+     * - 判定型（is/can/should/get/has/enable/support 前缀）——把"查询是否已冻结"当成
+     *   "执行冻结"处理是致命的；
+     * - 解冻型（unfreeze / thaw）——只求"不被冻"，不干扰解冻语义；
+     * - 无 int 参数者（如整表冻结）——无法定位到单个 uid，无从豁免。
+     */
+    private fun isFreezeCandidate(m: Method): Boolean {
+        val n = m.name.lowercase()
+        if (!n.contains("freeze")) return false
+        if (n.contains("unfreeze") || n.contains("thaw")) return false
+        if (JUDGE_PREFIXES.any { n.startsWith(it) }) return false
+        return m.parameterTypes.any { it == java.lang.Integer.TYPE }
+    }
+
+    /**
+     * Greeze 豁免拦截器。
+     *
+     * uid **惰性解析 + 缓存**：`onSystemServerStarting` 阶段 PackageManager 尚未就绪，
+     * 且解析是一次 IPC，故推迟到首次真实调用再执行（此后走 @Volatile 缓存）。
+     */
+    private class GreezeExemptHooker(private val xposed: XposedInterface) : XposedInterface.Hooker {
+
+        @Volatile
+        private var selfUid: Int = UID_UNRESOLVED
+
+        override fun intercept(chain: XposedInterface.Chain): Any? {
+            val uid = selfUidOrNull() ?: return chain.proceed()
+            val isTarget = try {
+                chain.args.any { it is Int && it == uid }
             } catch (_: Throwable) {
-                null
+                false
+            }
+            if (!isTarget) return chain.proceed()
+
+            val ex = chain.executable as? Method
+            val name = ex?.name ?: "?"
+
+            // void：跳过执行 == "什么都没做"，语义安全
+            if (ex != null && ex.returnType == java.lang.Void.TYPE) {
+                record(chain, name, "skip(void)", uid)
+                return null
+            }
+            // 引用类型：只有拿到明确的安全豁免值才阻断；否则不干预
+            val value = exemptionValue(ex)
+            if (value != null) {
+                record(chain, name, "return=$value", uid)
+                return value
+            }
+            xposed.log(
+                Log.WARN, TAG,
+                "greeze: no safe exemption value for $name(${ex?.returnType?.simpleName}), pass through",
+            )
+            return chain.proceed()
+        }
+
+        /** 命中自身冻结调用 → 双通道留痕（LSPosed 日志 + 回流 App 的 HOOK 段）便于验收 */
+        private fun record(chain: XposedInterface.Chain, name: String, detail: String, uid: Int) {
+            xposed.log(Log.INFO, TAG, "greeze exempt: $name uid=$uid $detail")
+            runCatching {
+                HookLogSink.log(
+                    HookLogSink.contextOf(chain.args.toList(), chain.thisObject),
+                    "greeze-exempt",
+                    "$name uid=$uid $detail",
+                )
             }
         }
 
+        /**
+         * 按返回类型给"豁免值"；返回 null 表示**该类型无安全值可取，调用方须放弃阻断**。
+         *
+         * 依据：日志中 `freezeUid uid=N return:whiteapp|WIDGET_APP|VISIBLE_APP|...`，
+         * 说明该方法的 return 即"豁免理由"，非 null 即代表"不冻结"。
+         *
+         * 2.2.0 Dev 10 实测补正（真机 2026-10-08）：仅覆盖 String/enum/void 时**仍会被冻结**——
+         * 冻结实际由 `freezeAction(int,int,String,boolean) -> boolean` 执行
+         * （其参数形态 uid/…/reason/… 与日志 `FZ uid = N reason = X success !` 完全吻合）。
+         * 故补上 `boolean → false`（"操作未成功"），阻止其上报冻结成功。
+         */
+        private fun exemptionValue(m: Method?): Any? {
+            val rt = m?.returnType ?: return null
+            return when {
+                rt == String::class.java -> GREEZE_WHITE_APP
+                rt == java.lang.Boolean.TYPE -> java.lang.Boolean.FALSE
+                rt.isEnum -> {
+                    val consts = rt.enumConstants
+                    consts?.firstOrNull { c ->
+                        val n = (c as? Enum<*>)?.name?.uppercase().orEmpty()
+                        n.contains("WHITE") || n.contains("VISIBLE") ||
+                            n.contains("SKIP") || n.contains("NONE")
+                    } ?: consts?.firstOrNull()
+                }
+                else -> null
+            }
+        }
+
+        private fun selfUidOrNull(): Int? {
+            val cached = selfUid
+            if (cached != UID_UNRESOLVED) return cached.takeIf { it >= 0 }
+            val resolved = resolveSelfUid()
+            selfUid = resolved
+            return resolved.takeIf { it >= 0 }
+        }
+
+        /** 经 AppGlobals 的 IPackageManager 查自身 uid；失败返回 -1（此后不再重试） */
+        private fun resolveSelfUid(): Int = runCatching {
+            val pm = Class.forName("android.app.AppGlobals")
+                .getMethod("getPackageManager")
+                .invoke(null)
+            val m = pm.javaClass.getMethod(
+                "getPackageUid",
+                String::class.java,
+                java.lang.Long.TYPE,
+                java.lang.Integer.TYPE,
+            )
+            m.invoke(pm, TARGET, 0L, 0) as Int
+        }.getOrElse {
+            xposed.log(Log.WARN, TAG, "greeze: resolve self uid failed: $it")
+            -1
+        }
     }
 
     companion object {
@@ -398,6 +569,18 @@ class LspEntry : XposedModule() {
         private val TARGET = cc.ytdttj.noticleaner.BuildConfig.APPLICATION_ID
         private const val AS_CLASS = "com.android.server.am.ActiveServices"
         private const val NMS_CLASS = "com.android.server.notification.NotificationManagerService"
+
+        /** HyperOS 后台冻结服务（Greeze）。类不存在即跳过豁免 hook（非小米 ROM 安全降级） */
+        private const val GREEZE_CLASS = "com.miui.server.greeze.GreezeManagerService"
+
+        /** 判定型方法前缀：这些是"查询"而非"执行"，绝不阻断（防把 isFrozen 当 freeze 处理） */
+        private val JUDGE_PREFIXES = listOf("is", "can", "should", "get", "has", "enable", "support")
+
+        /** Greeze 豁免：uid 尚未解析的哨兵值 */
+        private const val UID_UNRESOLVED = -2
+
+        /** Greeze 豁免：日志中出现的白名单理由常量（`freezeUid ... return:whiteapp`） */
+        private const val GREEZE_WHITE_APP = "whiteapp"
 
         /**
          * 覆盖多个 ROM 版本的方法名（存在哪个 hook 哪个，全部失败也不影响系统）。
