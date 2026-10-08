@@ -221,4 +221,83 @@ class PaymentExtractorTest {
         assertNotNull(p)
         assertEquals(PaymentExtractor.Direction.IN, p!!.direction)
     }
+
+    // ---- 2026-10-06 误上岛排查回归：亲情卡余额 / 微信券包 ----
+
+    @Test
+    fun `支付宝亲情卡 标题余额不抢主金额`() {
+        // 2026-10-05 21:23 真机事故原文：标题"剩余9968.90元"是存量，
+        // 旧实现取第一笔命中 → -¥9968.90 OUT 错误上岛（真交易是正文消费30.10元）
+        val p = extract(
+            "你的亲情卡剩余9968.90元",
+            "你***啊（**琪）使用你赠送的亲情卡消费30.10元",
+        )
+        assertNotNull(p)
+        assertEquals("30.10", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+    }
+
+    @Test
+    fun `余额前缀金额被跳过 落到真交易金额`() {
+        val p = extract("银行通知", "余额1,000.00元，消费30.10元")
+        assertNotNull(p)
+        assertEquals("30.10", p!!.amountText)
+    }
+
+    @Test
+    fun `应还账单金额不误判为交易`() {
+        // "本期应还3000.50元"是账单不是动账，整条无真交易金额 → null
+        assertNull(extract("账单提醒", "您本期应还3,000.50元，请按时还款"))
+    }
+
+    @Test
+    fun `余额宝收益不受余额关键词误伤`() {
+        // "余额宝"三字结尾不命中"余额"前缀，收益金额仍可解析
+        val p = extract("余额宝", "余额宝收益发放2.35元")
+        assertNotNull(p)
+        assertEquals("2.35", p!!.amountText)
+    }
+
+    @Test
+    fun `微信营销券包文案 方向未知`() {
+        // 2026-10-06 09:34 真机事故原文（两段聊天文本均无支付动作词）：
+        // 旧实现金额解析成功即上岛；现由 IslandNotifier 方向闸拦截（UNKNOWN）
+        val p1 = extract(
+            "李玉林",
+            "[2条]李玉林: 老朋友，假期没剩几天啦！最近好多老客户都趁这波活动来出旧机~\n" +
+                "别等旧机贬值再卖，先领10687元专属",
+        )
+        assertNotNull(p1)
+        assertEquals(PaymentExtractor.Direction.UNKNOWN, p1!!.direction)
+
+        val p2 = extract("李玉林", "[2条]李玉林: [小程序] 领10687元加价券包，旧机高价卖！")
+        assertNotNull(p2)
+        assertEquals(PaymentExtractor.Direction.UNKNOWN, p2!!.direction)
+    }
+
+    @Test
+    fun `多金额且窗口无方向词 宁可未知也不猜`() {
+        // 方向词紧邻的是另一笔金额时，全文回退会把方向错配给主金额
+        // （亲情卡事故的第二根因）——多候选时直接 UNKNOWN。
+        // 注意方向词"消费"距主金额 5000 需超出 WINDOW_AFTER=16 字符，制造窗口未命中。
+        val p = extract(
+            "通知",
+            "账户今日流水5000.00元（含多笔往来），明细里显示您昨天消费300.00元",
+        )
+        assertNotNull(p)
+        assertEquals("5000.00", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.UNKNOWN, p.direction)
+    }
+
+    @Test
+    fun `微信红包与转账文案仍可解析`() {
+        // 守卫不能误伤真支付：红包/转账关键词通知金额方向正常
+        val p1 = extract("陈一朵", "[微信红包]恭喜发财，大吉大利")
+        assertNull(p1) // 红包文案无金额数字，不上岛（金额在红包详情页）
+
+        val p2 = extract("微信支付", "微信支付凭证-¥45.50 商户消费")
+        assertNotNull(p2)
+        assertEquals("45.50", p2!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p2.direction)
+    }
 }

@@ -49,6 +49,26 @@ object PaymentExtractor {
             "|(?<![\\d.,])($NUM)\\s*元(?!\\d)",
     )
 
+    /**
+     * 余额/额度类关键词（2026-10-06 修复"亲情卡剩余9968.90元误上岛"）：
+     * 金额紧邻在这些词后面时是**存量**不是交易（"剩余9968.90元""余额1,000.00元"
+     * "本期应还3,000.50元"），必须跳过这笔、继续找真交易金额。
+     * 注意不能用"余额"前缀一票否决"余额宝收益2.35元"——"余额宝"三字结尾不命中"余额"。
+     */
+    private val BALANCE_WORDS = listOf(
+        "剩余", "余额", "可用", "额度", "总额", "净额", "应还", "待还", "已还",
+    )
+
+    /** 金额前最多回看几个字符找余额关键词（容忍"额度：5000元"这类分隔符） */
+    private const val BALANCE_LOOKBACK = 6
+
+    /** 紧邻金额前的文本是否为余额/额度语义（存量为非交易金额） */
+    private fun isBalanceLike(text: String, matchStart: Int): Boolean {
+        val from = (matchStart - BALANCE_LOOKBACK).coerceAtLeast(0)
+        val prefix = text.substring(from, matchStart).trimEnd(' ', '\u3000', '：', ':', ' ')
+        return BALANCE_WORDS.any { prefix.endsWith(it) }
+    }
+
     /** 收入关键词优先于支出（"您支付的交易已退款"应归收入） */
     private val INCOME_WORDS = listOf(
         "收入", "入账", "到账", "收款", "退款", "转入", "存款", "存入", "红包",
@@ -75,7 +95,7 @@ object PaymentExtractor {
     private fun isCollecteeNoun(text: String, idx: Int): Boolean =
         text.getOrNull(idx + 2) in setOf('方', '人', '商', '账', '户', '名')
 
-    private fun directionOf(text: String, amountRange: IntRange?): Direction {
+    private fun directionOf(text: String, amountRange: IntRange?, candidates: Int = 1): Direction {
         if (amountRange != null) {
             val from = (amountRange.first - WINDOW_BEFORE).coerceAtLeast(0)
             val to = (amountRange.last + 1 + WINDOW_AFTER).coerceAtMost(text.length)
@@ -105,7 +125,11 @@ object PaymentExtractor {
             scan(EXPENSE_WORDS, Direction.OUT)
             if (best != null) return best
         }
-        // 全文回退：收入词优先（保持"您支付的交易已退款"归收入语义）
+        // 全文回退（收入词优先，保持"您支付的交易已退款"归收入语义）——
+        // 2026-10-06 加守卫：仅当全文只有这一笔金额时才允许回退。
+        // 多金额时方向词可能属于另一笔（"剩余9968.90元/消费30.10元"把 30.10 旁的
+        // "消费"错配给 9968.90 判成 OUT），宁 UNKNOWN 也不猜。
+        if (candidates > 1) return Direction.UNKNOWN
         return when {
             INCOME_WORDS.any { text.contains(it) } -> Direction.IN
             EXPENSE_WORDS.any { text.contains(it) } -> Direction.OUT
@@ -123,6 +147,8 @@ object PaymentExtractor {
         var main: Pair<Currency, String>? = null
         var mainRange: IntRange? = null
         var converted: String? = null
+        // 有效候选数（非零、非余额类）——方向全文回退的守卫依据
+        var candidates = 0
         for (m in PATTERN.findAll(text)) {
             val prefix = m.groupValues[1]
             val currency = if (prefix.isNotEmpty()) tokenCurrency(prefix) else Currency.CNY
@@ -133,6 +159,10 @@ object PaymentExtractor {
             // 扫描到后面的零额时整条被判失败 → 银行扣款不上岛且无任何提示。
             // 末尾 `main ?: return null` 已覆盖"全篇只有零额"的语义（如"手续费0.00元"）。
             if (isZero(amount)) continue
+            // 2026-10-06：余额/额度类金额（"剩余9968.90元"）是存量不是交易，
+            // 跳过这笔继续找真交易金额——亲情卡通知由此落到正文的"消费30.10元"
+            if (isBalanceLike(text, m.range.first)) continue
+            candidates++
             if (main == null) {
                 main = currency to amount
                 mainRange = m.range
@@ -145,7 +175,7 @@ object PaymentExtractor {
         return Payment(
             currency = mainHit.first,
             amountText = mainHit.second,
-            direction = directionOf(text, mainRange),
+            direction = directionOf(text, mainRange, candidates),
             convertedCnyText = converted,
         )
     }
