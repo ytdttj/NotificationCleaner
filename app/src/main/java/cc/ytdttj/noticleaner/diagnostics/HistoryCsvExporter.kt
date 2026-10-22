@@ -39,8 +39,8 @@ object HistoryCsvExporter {
                         n.appName,
                         n.packageName,
                         n.channelName.ifBlank { n.channelId },
-                        n.title,
-                        n.content,
+                        flatten(n.title),
+                        flatten(n.content),
                         "%.2f%%".format(n.adProbability * 100),
                         if (n.learned) "是" else "否",
                         learnLabelOf(n),
@@ -65,4 +65,14 @@ object HistoryCsvExporter {
         } else {
             v
         }
+
+    /** 正文压成单行（与 DiagExporter.flatten 同口径）：裸 CR / U+2028 / U+0085 也算换行 */
+    private fun flatten(v: String): String = buildString(v.length) {
+        for (c in v) append(
+            when (c) {
+                '\n', '\r', '\u2028', '\u0085' -> ' '
+                else -> c
+            },
+        )
+    }
 }

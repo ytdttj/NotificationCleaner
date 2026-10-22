@@ -90,6 +90,28 @@ object ServiceLocator {
         runCatching {
             cc.ytdttj.noticleaner.notify.island.IslandDispatch.init(app)
         }
+        // 2.2.1 Dev 1：学习 schema 迁移。落盘的 spam_delta.bin 是**只增不改的历史产物**，
+        // 拟合语义一变（渠道桶护栏），旧 delta 里被灌歪的渠道桶不会自己消失 ——
+        // 必须主动重算一次，否则本次修复对「已经学过、但从此不再点学习」的用户等于没发布。
+        // 放在进程启动而非历史页：保证**从不打开界面的用户**也能被修好。
+        appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                if (modelRepo.needsRefit() &&
+                    db.notificationDao().listLearnedOnce().isNotEmpty()
+                ) {
+                    cc.ytdttj.noticleaner.data.LearningHelper.refit(db.notificationDao(), modelRepo)
+                    cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                        cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
+                        "学习 schema 迁移：按新护栏重拟合既有标注",
+                    )
+                }
+            }.onFailure {
+                cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                    cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
+                    "✗ 学习 schema 迁移失败: $it（仍用旧 delta）",
+                )
+            }
+        }
     }
 
     /** LSPosed 框架服务绑定（模块激活）：注入同步器并补推 delta */

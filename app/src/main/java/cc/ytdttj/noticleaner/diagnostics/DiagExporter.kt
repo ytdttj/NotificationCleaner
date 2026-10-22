@@ -343,8 +343,8 @@ object DiagExporter {
                         n.appName,
                         n.packageName,
                         n.channelName.ifBlank { n.channelId }.ifBlank { "-" },
-                        n.title.replace("\n", " "),
-                        n.content.replace("\n", " "),
+                        flatten(n.title),
+                        flatten(n.content),
                         n.decision,
                         "${(n.adProbability * 100).toInt()}%",
                         if (n.learned) "是(${if (n.learnLabel == 1) "广告" else "正常"})" else "否",
@@ -357,7 +357,21 @@ object DiagExporter {
 
     private fun csv(v: String): String {
         val s = v.replace("\"", "\"\"")
-        return if (s.any { it == ',' || it == '"' || it == '\n' }) "\"$s\"" else s
+        return if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"$s\"" else s
+    }
+
+    /**
+     * 把正文压成单行：除了 `\n` 还要处理 `\r`（部分短信正文用裸 CR 分行，如联通满意度短信）
+     * 以及 Unicode 行分隔符 `\u2028` / 下一行 `\u0085`——`replace("\n"," ")` 漏掉它们后，
+     * 孤立 CR 会让 CSV 行结构损坏、Excel/WPS 打开串行（2026-10-15 实测 5~6 处/份）。
+     */
+    private fun flatten(v: String): String = buildString(v.length) {
+        for (c in v) append(
+            when (c) {
+                '\n', '\r', '\u2028', '\u0085' -> ' '
+                else -> c
+            },
+        )
     }
 
     /**

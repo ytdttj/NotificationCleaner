@@ -239,9 +239,16 @@ object RingLog {
                     true
                 }.getOrDefault(false)
                 if (changed) {
-                    // 整文件重写后 writer 的追加偏移与文件脱钩，强制重开
+                    // 整文件重写后 writer 的追加偏移与文件脱钩，强制重开；折叠状态一并失效——
+                    // 若被裁掉的最后一条正是 lastMsg，后续逐字相同的消息（看门狗心跳等）会一直
+                    // count++ 永不落盘，"（上行连续重复 ×N）"摘要也会指向已删除的行
+                    // （KEEP/SYS 导出恒 1~2 条的根因，2026-10-15 修复）
                     runCatching { segs[m]?.writer?.close() }
                     segs[m]?.writer = null
+                    segs[m]?.lastMsg = null
+                    segs[m]?.lastKey = null
+                    segs[m]?.lastTs = ""
+                    segs[m]?.count = 1
                 }
             }
         }

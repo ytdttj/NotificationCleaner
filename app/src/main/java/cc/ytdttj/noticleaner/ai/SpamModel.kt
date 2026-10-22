@@ -37,9 +37,18 @@ class SpamModel(
      * 带通道偏置的打分（1.1.11）：在文本 log-odds 上叠加通道桶权重（delta 学习所得）。
      * [channelKey] 为 [FeatureHasher.channelKey] 计算的桶索引；null/0 表示无通道信息。
      */
-    fun score(rawText: String, channelKey: Int?): Double {
-        if (channelKey == null || channelKey == 0) return score(rawText)
-        return scoreWithChannel(FeatureHasher.counts(rawText), weights[channelKey].toDouble())
+    fun score(rawText: String, channelKey: Int?): Double =
+        score(rawText, appKey = null, channelKey = channelKey)
+
+    /**
+     * 带发件人先验的打分（2.2.1 vc87）：App 桶与渠道桶**互斥生效**（fit 三态判定保证
+     * delta 里至多一个非零），打分侧把两者都加上即可 —— 至多命中一个。
+     */
+    fun score(rawText: String, appKey: Int?, channelKey: Int?): Double {
+        val aw = if (appKey != null && appKey != 0) weights[appKey].toDouble() else 0.0
+        val cw = if (channelKey != null && channelKey != 0) weights[channelKey].toDouble() else 0.0
+        if (aw == 0.0 && cw == 0.0) return score(rawText)
+        return scoreWithPriors(FeatureHasher.counts(rawText), aw, cw)
     }
 
     /**
@@ -47,17 +56,22 @@ class SpamModel(
      * 供决策热路径复用 hardAllow 检查时的 normalize 结果（消除重复 normalize）。
      * 与 [score] 传同一原始文本的结果完全一致（counts 的构建方式相同）。
      */
-    fun scoreNormalized(normalizedText: String, channelKey: Int?): Double {
+    fun scoreNormalized(normalizedText: String, channelKey: Int?): Double =
+        scoreNormalized(normalizedText, appKey = null, channelKey = channelKey)
+
+    fun scoreNormalized(normalizedText: String, appKey: Int?, channelKey: Int?): Double {
         val counts = FeatureHasher.countsOfNormalized(normalizedText)
-        if (channelKey == null || channelKey == 0) {
+        val aw = if (appKey != null && appKey != 0) weights[appKey].toDouble() else 0.0
+        val cw = if (channelKey != null && channelKey != 0) weights[channelKey].toDouble() else 0.0
+        if (aw == 0.0 && cw == 0.0) {
             return scoreWithCounts(weights, bias, counts)
         }
-        return scoreWithChannel(counts, weights[channelKey].toDouble())
+        return scoreWithPriors(counts, aw, cw)
     }
 
-    /** 通道偏置 + 文本特征打分（通道权重不计入 L2 归一化，避免被稀释） */
-    private fun scoreWithChannel(counts: FeatureCounts, channelWeight: Double): Double {
-        var z = bias + channelWeight
+    /** 发件人先验（App 桶 / 渠道桶，互斥）+ 文本特征打分（先验权重不计入 L2 归一化，避免被稀释） */
+    private fun scoreWithPriors(counts: FeatureCounts, appWeight: Double, channelWeight: Double): Double {
+        var z = bias + appWeight + channelWeight
         if (counts.size == 0) return sigmoid(z)
         var normSq = 0.0
         counts.forEach { _, c -> normSq += c.toDouble() * c.toDouble() }

@@ -25,6 +25,10 @@ class ModelRepository(private val context: Context) {
     private val fingerprintFile: File
         get() = File(context.filesDir, "model/tuned_fp")
 
+    /** 学习 schema 版本文件（2.2.1 Dev 1）：拟合语义变化时用于触发一次性全量重拟合 */
+    private val schemaFile: File
+        get() = File(context.filesDir, "model/learn_schema")
+
     @Volatile
     private var base: SpamModel? = null
 
@@ -76,7 +80,8 @@ class ModelRepository(private val context: Context) {
         val model = get() ?: return null
         val key = cacheKey(pkg, normalizedText, channelKey)
         synchronized(scoreCache) { scoreCache[key] }?.let { return it }
-        val p = model.scoreNormalized(normalizedText, channelKey)
+        // vc87：App 先验桶由 pkg 唯一决定（缓存键已含 pkg，键无需变化）
+        val p = model.scoreNormalized(normalizedText, cc.ytdttj.noticleaner.ai.FeatureHasher.appKey(pkg), channelKey)
         synchronized(scoreCache) { scoreCache[key] = p }
         return p
     }
@@ -124,6 +129,27 @@ class ModelRepository(private val context: Context) {
         fingerprintFile.parentFile?.mkdirs()
         fingerprintFile.writeText(fp.toString())
     }
+
+    /**
+     * 上次拟合所用的**学习 schema 版本**；0 表示尚未拟合过（含老版本遗留 delta）。
+     *
+     * 2.2.1 Dev 1 引入：`SpamTuner.fit` 的语义变了（混杂渠道不建桶 / 渠道桶幅值封顶 /
+     * 重复学习不放大渠道桶）。落盘的 `spam_delta.bin` 是**只增不改的历史产物**——
+     * 老用户文件里可能带着被旧语义灌歪的渠道桶，若不做迁移，本次修复对「已经学过、
+     * 但从此不再点学习」的用户完全不起作用（表现依旧是「学为正常也没用」）。
+     */
+    suspend fun learningSchema(): Int = withContext(Dispatchers.IO) {
+        if (schemaFile.exists()) schemaFile.readText().trim().toIntOrNull() ?: 0 else 0
+    }
+
+    suspend fun setLearningSchema(v: Int) = withContext(Dispatchers.IO) {
+        schemaFile.parentFile?.mkdirs()
+        schemaFile.writeText(v.toString())
+    }
+
+    /** 是否需要重新拟合（标注非空，且基线模型或学习 schema 已变更）。 */
+    suspend fun needsRefit(): Boolean =
+        learningSchema() != LEARNING_SCHEMA
 
     /** 应用新的学习修正：写入 delta 文件并重建生效模型。 */
     suspend fun applyDelta(delta: SpamDelta) = mutex.withLock {
@@ -227,5 +253,17 @@ class ModelRepository(private val context: Context) {
     companion object {
         /** 打分 LRU 上限（ImprovePlan P1-3） */
         private const val SCORE_CACHE_MAX = 64
+
+        /**
+         * 学习 schema 版本（2.2.1 Dev 1）。
+         *
+         * **每次改动 `SpamTuner.fit` 的拟合语义都必须 +1**，否则老用户已落盘的 delta
+         * 不会重算，修复等于没发布。历史：
+         * - 1：1.1.11 引入通道桶 / 样本权重
+         * - 2：2.2.1 Dev 1 渠道桶护栏（混杂渠道不建桶 + 幅值封顶 + 重复学习不放大渠道桶）
+         * - 3：2.2.1 vc86 纯渠道解除封顶（同侧 ≥3 条标注的渠道放宽到 ±8）
+         * - 4：2.2.1 vc87 App 级先验桶（纯 App 桶接管渠道桶，三态互斥）
+         */
+        const val LEARNING_SCHEMA = 4
     }
 }

@@ -50,6 +50,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import cc.ytdttj.noticleaner.ServiceLocator
+import cc.ytdttj.noticleaner.data.db.DECISION_CHANNEL_ALLOW
+import cc.ytdttj.noticleaner.data.db.DECISION_CHANNEL_BLOCK
 import cc.ytdttj.noticleaner.data.db.DECISION_CONVERSATION
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI_MODULE
@@ -87,6 +89,10 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpe
     val search by vm.search.collectAsState()
     val selected by vm.selected.collectAsState()
     val toast by vm.toast.collectAsState()
+    // 2.2.1 Dev 1：渠道豁免状态（详情页据此显示"已豁免/未豁免"）
+    val allowedChannels by vm.allowedChannels.collectAsState()
+    // 2.2.1 vc86：渠道一律拦截状态
+    val blockedChannels by vm.blockedChannels.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -203,6 +209,12 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpe
                     },
                     onLearn = { label -> vm.learn(n, label) },
                     onUnlearn = { vm.unlearn(n) },
+                    channelAllowed = vm.channelAllowKeyOf(n) in allowedChannels,
+                    onAllowChannel = { vm.allowChannel(n) },
+                    onRevokeChannel = { vm.revokeChannelAllow(n) },
+                    channelBlocked = vm.channelAllowKeyOf(n) in blockedChannels,
+                    onBlockChannel = { vm.blockChannel(n) },
+                    onRevokeChannelBlock = { vm.revokeChannelBlock(n) },
                 )
             }
         }
@@ -324,6 +336,8 @@ private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
                         DECISION_FILTERED_BY_RULE, DECISION_FILTERED_BY_RULE_MODULE -> Badge { Text("规则过滤") }
                         DECISION_MANUAL_MARKED_AD -> Badge { Text("已学习广告") }
                         DECISION_WHITELIST -> Text("白名单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        DECISION_CHANNEL_ALLOW -> Text("渠道豁免", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        DECISION_CHANNEL_BLOCK -> Badge { Text("渠道拦截") }
                         DECISION_MEDIA -> Text("媒体", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
                         DECISION_CONVERSATION -> Text("会话", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
                         DECISION_ONGOING -> Text("常驻", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
@@ -538,6 +552,12 @@ internal fun NotificationDetail(
     onJumpChannel: () -> Unit,
     onLearn: (Int) -> Unit,
     onUnlearn: () -> Unit,
+    channelAllowed: Boolean = false,
+    onAllowChannel: () -> Unit = {},
+    onRevokeChannel: () -> Unit = {},
+    channelBlocked: Boolean = false,
+    onBlockChannel: () -> Unit = {},
+    onRevokeChannelBlock: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
         if (n.title.isNotEmpty()) {
@@ -559,6 +579,48 @@ internal fun NotificationDetail(
         Spacer(Modifier.height(16.dp))
         Button(onClick = onJumpChannel, Modifier.fillMaxWidth()) {
             Text("跳转到该通道设置")
+        }
+        // 2.2.1 Dev 1：「此渠道不再拦截」——面向"学了很多次还是被拦"的用户。
+        // 抖音这类渠道同时发私信与广告，模型在渠道层面天然判不准；这是一条不需要理解模型、
+        // 且可随时撤销的出路（比让用户反复逐条"学为正常"有效得多）。
+        // 2.2.1 vc86：对称面「此渠道一律拦截」——面向"整条渠道只发营销"（百度网盘订阅故事）：
+        // 逐条学习追不上、系统关渠道会被 mipush 重建绕过，需要一条确定性出口。
+        if (n.channelId.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            when {
+                channelBlocked -> {
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
+                        onClick = onRevokeChannelBlock,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("此渠道已设为一律拦截 · 点击恢复 AI 过滤")
+                    }
+                }
+                channelAllowed -> {
+                    cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
+                        onClick = onRevokeChannel,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("此渠道已豁免拦截 · 点击恢复 AI 过滤")
+                    }
+                }
+                else -> {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
+                            onClick = onAllowChannel,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("此渠道不再拦截")
+                        }
+                        cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
+                            onClick = onBlockChannel,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("此渠道一律拦截")
+                        }
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
         // 1.1.11：已学习的通知也允许再次点击学习（同方向重复点击累积权重）；随时可取消学习

@@ -36,6 +36,15 @@ object NotificationProtector {
         if (extras.containsKey(Notification.EXTRA_CONVERSATION_TITLE)) return DECISION_CONVERSATION
         if (extras.containsKey(Notification.EXTRA_MESSAGES)) return DECISION_CONVERSATION
 
+        // 2.2.1 Dev 1：文本级会话识别兜底。
+        // 抖音/闲鱼/小红书等私信走裸 mipush，上面四个结构性信号一个都不带，
+        // 会被丢给 AI 打分，而「私信了你: [分享视频]」这类文本被 AI 判到 0.98（误拦真人私信）。
+        // 这里用会话句式兜底（见 [ConversationTextMatcher]），命中即判会话、跳过 AI。
+        val textTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+        val textContent = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+        if (ConversationTextMatcher.isConversation(textTitle, textContent)) return DECISION_CONVERSATION
+
         return null
     }
 }

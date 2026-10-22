@@ -11,6 +11,8 @@ import cc.ytdttj.noticleaner.ServiceLocator
 import cc.ytdttj.noticleaner.ai.SpamModel
 import cc.ytdttj.noticleaner.ai.takeCodepoints
 import cc.ytdttj.noticleaner.data.ModelRepository
+import cc.ytdttj.noticleaner.data.db.DECISION_CHANNEL_ALLOW
+import cc.ytdttj.noticleaner.data.db.DECISION_CHANNEL_BLOCK
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_RULE
 import cc.ytdttj.noticleaner.data.db.DECISION_PASSED
@@ -142,7 +144,13 @@ class CleanerListenerService : NotificationListenerService() {
                     }
                 }
             }
-            ServiceLocator.ruleEngine.start(appScope!!)
+            // 2.2.1 Dev 1：渠道豁免集合同步进规则引擎（热路径 O(1) 查询，零 IO）
+            // 2.2.1 vc86：渠道一律拦截集合同样走热同步
+            ServiceLocator.ruleEngine.start(
+                appScope!!,
+                channelAllowlist = ServiceLocator.settings.channelAllowlist,
+                channelBlocklist = ServiceLocator.settings.channelBlocklist,
+            )
         }
 
         /** 监听服务是否已授权并连接 */
@@ -360,10 +368,16 @@ class CleanerListenerService : NotificationListenerService() {
             protectedType != null -> decision = protectedType
             else -> {
                 val whitelisted = locator.ruleEngine.isWhitelisted(pkg)
+                // 2.2.1 Dev 1：渠道豁免「此渠道不再拦截」——与 APP 白名单同级（跳过 AI，规则仍优先）
+                val channelAllowed = locator.ruleEngine.isChannelAllowed(pkg, channel)
+                // 2.2.1 vc86：渠道一律拦截「此渠道一律拦截」——最具体的用户意图，压过白名单
+                val channelBlocked = locator.ruleEngine.isChannelBlocked(pkg, channel)
                 val rule = locator.ruleEngine.match(pkg, title, content)
                 when {
                     rule != null -> decision = DECISION_FILTERED_BY_RULE
+                    channelBlocked -> decision = DECISION_CHANNEL_BLOCK
                     whitelisted -> decision = DECISION_WHITELIST // 跳过 AI 过滤（规则仍生效，见上）
+                    channelAllowed -> decision = DECISION_CHANNEL_ALLOW
                     else -> {
                         val normalized = cc.ytdttj.noticleaner.ai.FeatureHasher.normalize(joined)
                         // 1.3.2（P1-3）：硬放行改判已归一化文本（零额外分配，省 6 次 locale 敏感扫描）。
@@ -402,7 +416,10 @@ class CleanerListenerService : NotificationListenerService() {
             "决策 pkg=$pkg decision=$decision p=$probability title=${title.take(24)}",
         )
 
-        if (decision == DECISION_FILTERED_BY_AI || decision == DECISION_FILTERED_BY_RULE) {
+        if (decision == DECISION_FILTERED_BY_AI ||
+            decision == DECISION_FILTERED_BY_RULE ||
+            decision == DECISION_CHANNEL_BLOCK
+        ) {
             // 1.3.2 诊断补盲：岛白名单相关包的通知被拦截时留痕（排查"扣款通知未上岛"——
             // 此前该路径无任何 trace，无法区分"被拦截"与"岛链路故障"）
             val island = cc.ytdttj.noticleaner.notify.island.IslandNotifier

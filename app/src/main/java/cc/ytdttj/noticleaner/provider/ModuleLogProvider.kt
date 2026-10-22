@@ -131,9 +131,72 @@ class ModuleLogProvider : ContentProvider() {
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
     override fun getType(uri: Uri): String = "vnd.android.cursor.item/vnd.cc.ytdttj.noticleaner.modulelog"
 
+    /**
+     * 2.2.1 Dev 1：「按需解冻」入口（只允许 system_server 与本进程调用）。
+     *
+     * 模块在 NMS 入队 hook 里调 [ContentResolver.call] —— 这是一次**同步** binder 调用。
+     * 目的不是传数据，而是**制造一次"外部调用进来"的事件**：
+     * Greeze（HyperOS 的后台冻结服务）只在"有 binder 调用 / 亮屏 / 启动 Activity"时解冻，
+     * **没有定时解冻**；而通知投递走的是 `oneway` 回调，**不会**触发解冻。
+     * 于是进程一旦被冻，积压的通知要等到某个巧合的调用才被放出来
+     * （2026-10-14 实证：一次冻结持续 316 秒，期间 7 条通知全部积压，解冻那一毫秒一次性投递）。
+     *
+     * 这里不做业务、直接返回 null —— 副作用就是那次同步 binder 往返本身。
+     *
+     * 2.2.1 Dev 1 (85)：回执埋点 —— 此前 `nc_wake` 到没到**完全无法自证**（模块端日志被
+     * logcat 缓冲滚掉、本方法不留痕），是 10-15 双设备验证报告 §5 的最大取证缺口。
+     * 现在计数进内存 + prefs（跨进程重启存活），首条与每 50 条写一条 KEEP 环形日志，导出即可见。
+     */
+    override fun call(method: String, arg: String?, extras: android.os.Bundle?): android.os.Bundle? {
+        val uid = Binder.getCallingUid()
+        if (uid != Process.SYSTEM_UID && uid != Process.myUid()) return null
+        if (method == WAKE_METHOD) {
+            recordWakeReceipt()
+            return null
+        }
+        return super.call(method, arg, extras)
+    }
+
+    /** nc_wake 累计回执数（进程内存活；持久化见 [recordWakeReceipt]） */
+    @Volatile
+    private var wakeReceipts: Long = 0L
+
+    /**
+     * 记一次解冻请求回执。首条（证明"装上了且通路打开"）与每 50 条（证明"持续在发"）
+     * 落 KEEP 环形日志；计数写 prefs，让"上次开机至今发了多少"也能从导出推断。
+     * 注意 ContentProvider.onCreate 早于 Application.onCreate，RingLog 可能尚未 ready
+     * ——log() 对未初始化是 no-op，此处 runCatching 兜底即可，绝不能抛异常。
+     */
+    private fun recordWakeReceipt() {
+        val n = ++wakeReceipts
+        if (n != 1L && n % WAKE_LOG_EVERY != 0L) return
+        runCatching {
+            context?.getSharedPreferences(WAKE_PREFS, Context.MODE_PRIVATE)?.edit()
+                ?.putLong(WAKE_PREF_COUNT, n)
+                ?.putLong(WAKE_PREF_LAST_AT, System.currentTimeMillis())
+                ?.apply()
+            cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                cc.ytdttj.noticleaner.diagnostics.LogModules.KEEP,
+                "GreezeWake 回执 recv=$n（system_server 解冻请求已到达本进程）",
+            )
+        }
+    }
+
     companion object {
         const val AUTHORITY = "cc.ytdttj.noticleaner.modulelog"
         val CONTENT_URI: Uri = Uri.parse("content://$AUTHORITY/log")
+
+        /**
+         * 2.2.1 Dev 1：「按需解冻」方法名。
+         * 模块端 [cc.ytdttj.noticleaner.keepalive.GreezeWake] 会用它发起一次同步 call。
+         */
+        const val WAKE_METHOD = "nc_wake"
+
+        /** nc_wake 回执埋点（Dev 1 vc85）：prefs 文件 / 键与采样间隔 */
+        const val WAKE_PREFS = "nc_wake_stats"
+        const val WAKE_PREF_COUNT = "count"
+        const val WAKE_PREF_LAST_AT = "last_at"
+        const val WAKE_LOG_EVERY = 50L
 
         /** Dev 5：模块心跳决策标记（system_server 内 hook 成功后回写，不入库） */
         const val LSP_ALIVE_DECISION = "LSP_ALIVE"

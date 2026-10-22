@@ -121,6 +121,14 @@ class HistoryViewModel(
     private val _toast = MutableStateFlow<String?>(null)
     val toast: StateFlow<String?> = _toast
 
+    /** 已豁免渠道（2.2.1 Dev 1）：`pkg|channelId` 集合，供详情页展示「此渠道不再拦截」的当前状态 */
+    private val _allowedChannels = MutableStateFlow<Set<String>>(emptySet())
+    val allowedChannels: StateFlow<Set<String>> = _allowedChannels
+
+    /** 已设为一律拦截的渠道（2.2.1 vc86）：`pkg|channelId` 集合，供详情页展示「此渠道一律拦截」的当前状态 */
+    private val _blockedChannels = MutableStateFlow<Set<String>>(emptySet())
+    val blockedChannels: StateFlow<Set<String>> = _blockedChannels
+
     fun select(n: NotificationEntity?) {
         _selected.value = n
     }
@@ -137,10 +145,74 @@ class HistoryViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             modelRepo.get() // 预热模型加载
             // 基线模型升级（assets 更新）后：用既有标注对新基线自动重新拟合
+            // 2.2.1 Dev 1：**学习 schema 变更**（渠道桶护栏）同样触发一次全量重拟合——
+            // 落盘的 delta 是只增不改的历史产物，不重算则本次修复对已学习过的用户不生效。
             val labels = dao.listLearnedOnce()
-            if (labels.isNotEmpty() && modelRepo.tunedFingerprint() != modelRepo.baseFingerprint()) {
+            if (labels.isNotEmpty() &&
+                (modelRepo.tunedFingerprint() != modelRepo.baseFingerprint() || modelRepo.needsRefit())
+            ) {
                 refit()
             }
+        }
+        viewModelScope.launch {
+            ServiceLocator.settings.channelAllowlist.collect { _allowedChannels.value = it }
+        }
+        viewModelScope.launch {
+            ServiceLocator.settings.channelBlocklist.collect { _blockedChannels.value = it }
+        }
+    }
+
+    /** 渠道豁免键（与 NLS / 模块端同一形态） */
+    fun channelAllowKeyOf(n: NotificationEntity): String =
+        cc.ytdttj.noticleaner.notify.RuleEngine.channelAllowKey(n.packageName, n.channelId)
+
+    /**
+     * 「此渠道不再拦截」（2.2.1 Dev 1）。
+     *
+     * 存在的理由：抖音这类「同一渠道既发私信又发广告」的场景，模型的黑白判断在渠道层面
+     * 天然不可靠，普通用户需要一条**不需要理解模型**的出路。本操作只是把渠道加进豁免集合，
+     * 随时可撤销（[revokeChannelAllow]），不是不可逆操作。
+     */
+    fun allowChannel(n: NotificationEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (n.channelId.isEmpty()) {
+                _toast.value = "该通知没有渠道信息，无法按渠道豁免"
+                return@launch
+            }
+            ServiceLocator.settings.allowChannel(channelAllowKeyOf(n))
+            _toast.value = "已设置「此渠道不再拦截」；该渠道的通知一律放行，可随时撤销"
+        }
+    }
+
+    fun revokeChannelAllow(n: NotificationEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            ServiceLocator.settings.disallowChannel(channelAllowKeyOf(n))
+            _toast.value = "已恢复该渠道的 AI 过滤"
+        }
+    }
+
+    /**
+     * 「此渠道一律拦截」（2.2.1 vc86）——豁免的对称面。
+     *
+     * 面向百度网盘这类「整条渠道只发营销」的场景：逐条学习追不上（每条广告文案全新）、
+     * 渠道先验被护栏封顶 —— 给用户一条**确定性**的出口，不依赖模型与学习。
+     * 与豁免集合互斥（blockChannel 会同时从豁免集合移除），随时可撤销。
+     */
+    fun blockChannel(n: NotificationEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (n.channelId.isEmpty()) {
+                _toast.value = "该通知没有渠道信息，无法按渠道拦截"
+                return@launch
+            }
+            ServiceLocator.settings.blockChannel(channelAllowKeyOf(n))
+            _toast.value = "已设置「此渠道一律拦截」；该渠道的通知一律清除，可随时撤销"
+        }
+    }
+
+    fun revokeChannelBlock(n: NotificationEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            ServiceLocator.settings.unblockChannel(channelAllowKeyOf(n))
+            _toast.value = "已恢复该渠道的 AI 过滤"
         }
     }
 
@@ -176,12 +248,26 @@ class HistoryViewModel(
             } else {
                 null
             }
+            // 2.2.1 Dev 1：渠道级拦截提示。学习是**文本级**、拦截是**文本+渠道级**——
+            // 同一渠道若还有广告标注，会整体抬高该渠道，用户逐条"学为正常"永远追不上，
+            // 必须明确告诉他出路是「此渠道不再拦截」，否则只会重复无效点击。
+            val mix = if (label == 0) {
+                runCatching {
+                    cc.ytdttj.noticleaner.data.LearningHelper
+                        .channelLabelMix(dao, n.packageName, n.channelId)
+                }.getOrNull()
+            } else {
+                null
+            }
             _toast.value = when {
                 label == 1 && sameDirection -> "已重复学习（第 ${n.learnCount + 1} 次），权重已加强"
                 label == 1 -> "已学习为广告通知并清除"
                 hitRule != null ->
                     "已学习为正常通知；但该通知命中规则「${hitRule.appName}｜${hitRule.keyword.ifBlank { "条件规则" }}」，" +
                         "规则优先于学习，仍会被拦截——请到「规则」页调整或删除该规则"
+                mix != null && mix.ad > 0 ->
+                    "已学习为正常通知；但该渠道还有 ${mix.ad} 条广告标注，会把本渠道整体抬高，" +
+                        "光靠逐条学习可能仍被拦——如仍被拦，请点「此渠道不再拦截」"
                 else -> "已学习为正常通知"
             }
         }

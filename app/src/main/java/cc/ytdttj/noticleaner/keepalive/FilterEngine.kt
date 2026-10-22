@@ -9,6 +9,7 @@ import cc.ytdttj.noticleaner.data.ModuleConfig
 import cc.ytdttj.noticleaner.data.ModuleConfigCodec
 import cc.ytdttj.noticleaner.data.ModuleRule
 import cc.ytdttj.noticleaner.data.db.CompiledCondition
+import cc.ytdttj.noticleaner.data.db.DECISION_CHANNEL_BLOCK
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_AI_MODULE
 import cc.ytdttj.noticleaner.data.db.DECISION_FILTERED_BY_RULE_MODULE
 import cc.ytdttj.noticleaner.data.db.RuleCompiler
@@ -16,6 +17,7 @@ import cc.ytdttj.noticleaner.data.db.RuleCondition
 import cc.ytdttj.noticleaner.data.db.RuleConditionSet
 import cc.ytdttj.noticleaner.notify.FilterGuards
 import cc.ytdttj.noticleaner.notify.NotificationProtector
+import cc.ytdttj.noticleaner.notify.RuleEngine
 
 /**
  * LSPosed 模块端判定引擎（1.2.1，借鉴 ref/Notice KeywordFilter 架构）：
@@ -39,6 +41,21 @@ internal class FilterEngine {
     )
 
     @Volatile private var config = ModuleConfig()
+
+    /**
+     * 渠道豁免集合（2.2.1 Dev 1）：元素形态 `pkg|channelId`。
+     * 与 NLS 端 [cc.ytdttj.noticleaner.notify.RuleEngine.isChannelAllowed] 必须同语义——
+     * 模块端若不知道豁免名单，会把用户刚设为「不再拦截」的渠道继续在 system_server 吞掉，
+     * 通知永远到不了 App，用户表现为"设了完全没用"。
+     */
+    @Volatile private var allowedChannels: Set<String> = emptySet()
+
+    /**
+     * 渠道一律拦截集合（2.2.1 vc86）：元素形态 `pkg|channelId`。
+     * 与 NLS 端 [cc.ytdttj.noticleaner.notify.RuleEngine.isChannelBlocked] 必须同语义——
+     * 模块端若不知道拦截名单，会把用户刚设为「一律拦截」的渠道继续放行（"设了没用"）。
+     */
+    @Volatile private var blockedChannels: Set<String> = emptySet()
 
     /** 已应用用户学习修正的内置模型；未加载为 null（此时全部放行，靠 NLS 兜底） */
     @Volatile private var model: SpamModel? = null
@@ -99,8 +116,23 @@ internal class FilterEngine {
             if (hit) return Outcome(true, DECISION_FILTERED_BY_RULE_MODULE, 0f, title, joined)
         }
 
+        // 渠道一律拦截（2.2.1 vc86）：与 NLS 端同语义、同优先级（规则已优先；压过白名单/豁免）
+        val channel = notification.channelId.orEmpty()
+        if (channel.isNotEmpty() &&
+            RuleEngine.channelAllowKey(pkg, channel) in blockedChannels
+        ) {
+            return Outcome(true, DECISION_CHANNEL_BLOCK, 0f, title, joined)
+        }
+
         // 白名单：跳过 AI 过滤
         if (pkg in cfg.whitelist) return null
+
+        // 渠道豁免（2.2.1 Dev 1）：与 NLS 端同语义、同优先级（规则已在上方优先判定）
+        if (channel.isNotEmpty() &&
+            RuleEngine.channelAllowKey(pkg, channel) in allowedChannels
+        ) {
+            return null
+        }
 
         // AI 判定（与 NLS 一致：归一化文本 = title + content 合流）
         val aiText = listOf(title, joined).filter { it.isNotEmpty() }.joinToString("\n")
@@ -118,9 +150,10 @@ internal class FilterEngine {
             return null
         }
 
-        val channel = notification.channelId.orEmpty()
+        // 渠道已在白名单/豁免判定处取过（channel 变量复用，避免重复构建字符串）
         val chKey = if (channel.isNotEmpty()) FeatureHasher.channelKey(pkg, channel) else null
-        val p0 = m.scoreNormalized(normalized, chKey)
+        // vc87：App 先验桶（fit 三态互斥，delta 里至多一个非零）
+        val p0 = m.scoreNormalized(normalized, FeatureHasher.appKey(pkg), chKey)
         val p = if (aiText.contains('>') || aiText.contains('＞')) {
             maxOf(p0, FilterGuards.SPAM_MARK_BOOST)
         } else {
@@ -156,6 +189,8 @@ internal class FilterEngine {
     private fun refresh(prefs: android.content.SharedPreferences) {
         val next = ModuleConfigCodec.decode(prefs.getString(ModuleConfigCodec.KEY_CONFIG, null))
         config = next
+        allowedChannels = next.allowedChannels.toSet()
+        blockedChannels = next.blockedChannels.toSet()
         compiledRules = next.rules.map { r ->
             val set = RuleConditionSet(
                 join = r.join,

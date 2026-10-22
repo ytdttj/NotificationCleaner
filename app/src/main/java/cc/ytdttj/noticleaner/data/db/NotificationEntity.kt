@@ -15,6 +15,8 @@ const val DECISION_FILTERED_BY_RULE_MODULE = "FILTERED_BY_RULE_MODULE"
 
 // 保护型决策：默认不参与过滤，仅入库留档并在 UI 标注来源
 const val DECISION_WHITELIST = "WHITELIST" // 白名单 APP（跳过 AI 过滤，规则仍生效）
+const val DECISION_CHANNEL_ALLOW = "CHANNEL_ALLOW" // 渠道豁免（2.2.1 Dev 1：此渠道不再拦截）
+const val DECISION_CHANNEL_BLOCK = "CHANNEL_BLOCK" // 渠道一律拦截（2.2.1 vc86：百度网盘式纯广告渠道的确定性出口）
 const val DECISION_MEDIA = "MEDIA" // 媒体通知（音乐/视频播放控件）
 const val DECISION_CONVERSATION = "CONVERSATION" // 对话通知（MessagingStyle 等）
 const val DECISION_ONGOING = "ONGOING" // 常驻通知（进度条、来电）
@@ -26,6 +28,7 @@ val FILTERED_DECISIONS = setOf(
     DECISION_FILTERED_BY_RULE,
     DECISION_FILTERED_BY_RULE_MODULE,
     DECISION_MANUAL_MARKED_AD,
+    DECISION_CHANNEL_BLOCK,
 )
 
 /**

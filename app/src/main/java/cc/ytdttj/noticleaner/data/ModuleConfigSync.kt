@@ -29,6 +29,15 @@ class ModuleConfigSync(
     private val prefs = context.getSharedPreferences(ModuleConfigCodec.PREFS_NAME, Context.MODE_PRIVATE)
     private val pushMutex = Mutex()
 
+    /** 5 路输入的合并载体（2.2.1 Dev 1）：kotlinx 的 combine 无 6 元同构重载，故先合 5 路再与渠道豁免合流 */
+    private class CoreConfig(
+        val rules: List<cc.ytdttj.noticleaner.data.db.RuleEntity>,
+        val whitelist: List<cc.ytdttj.noticleaner.data.db.WhitelistEntity>,
+        val threshold: Float,
+        val intercept: Boolean,
+        val deltaV: Long,
+    )
+
     /** 框架服务（App.onServiceBind 注入）；delta 文件推送需要，null = 模块未激活/框架不可用 */
     @Volatile
     var xposedService: io.github.libxposed.service.XposedService? = null
@@ -38,19 +47,28 @@ class ModuleConfigSync(
         // 1.3.2（P1-5）：整个同步协程挪 IO 池 + 500ms 防抖（注释承诺但此前未实现），
         // 配置抖动合并为一次落盘；commit → apply，不再阻塞 CPU 池线程
         scope.launch(Dispatchers.IO) {
-            combine(
+            // 2.2.1 Dev 1：渠道豁免加入同步集合后共 6 路输入，而 kotlinx 的 combine 只提供
+            // 到 5 个同构重载——用嵌套 combine（5 + 1）保持类型安全，不用 vararg 数组。
+            val core = combine(
                 ruleDao.listAll(),
                 whitelistDao.listAll(),
                 ServiceLocator.settings.threshold,
                 ServiceLocator.settings.interceptMode,
                 ServiceLocator.modelRepo.deltaVersion,
             ) { rules, whitelist, threshold, intercept, deltaV ->
+                CoreConfig(rules, whitelist, threshold, intercept, deltaV)
+            }
+            combine(
+                core,
+                ServiceLocator.settings.channelAllowlist,
+                ServiceLocator.settings.channelBlocklist,
+            ) { c, allow, block ->
                 ModuleConfig(
-                    threshold = threshold,
-                    interceptMode = intercept,
-                    deltaVersion = deltaV,
-                    whitelist = whitelist.map { it.packageName },
-                    rules = rules.map { r ->
+                    threshold = c.threshold,
+                    interceptMode = c.intercept,
+                    deltaVersion = c.deltaV,
+                    whitelist = c.whitelist.map { it.packageName },
+                    rules = c.rules.map { r ->
                         val set = r.conditionSet()
                         ModuleRule(
                             packageName = r.packageName,
@@ -61,6 +79,8 @@ class ModuleConfigSync(
                             },
                         )
                     },
+                    allowedChannels = allow.toList(),
+                    blockedChannels = block.toList(),
                 )
             }
                 .debounce(500)

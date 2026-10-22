@@ -19,6 +19,20 @@ data class ModuleConfig(
     val deltaVersion: Long = 0L,
     val whitelist: List<String> = emptyList(),
     val rules: List<ModuleRule> = emptyList(),
+    /**
+     * 渠道豁免（2.2.1 Dev 1）：元素形态 `pkg|channelId`，与 [cc.ytdttj.noticleaner.notify.RuleEngine.channelAllowKey] 一致。
+     *
+     * 必须下发给模块：LSPosed 模式下通知在 system_server 入队前就被判定，
+     * 模块端若不知道豁免名单，会把用户刚设为「不再拦截」的渠道继续吞掉（用户表现为"设了没用"）。
+     * 默认值保证旧版模块解码不炸（ignoreUnknownKeys + 有默认值）。
+     */
+    val allowedChannels: List<String> = emptyList(),
+    /**
+     * 渠道一律拦截（2.2.1 vc86）：元素形态同 [allowedChannels]。
+     * 必须下发给模块 —— 否则模块端会把用户刚设为「一律拦截」的渠道继续放行（用户表现为"设了没用"）。
+     * 默认值保证旧版解码兼容。
+     */
+    val blockedChannels: List<String> = emptyList(),
 )
 
 @Serializable

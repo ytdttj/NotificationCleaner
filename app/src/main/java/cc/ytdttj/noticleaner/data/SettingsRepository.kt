@@ -115,6 +115,63 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[keyHistoryRetentionDays] = value.coerceIn(1, 90) }
     }
 
+    // ---- 渠道豁免「此渠道不再拦截」（2.2.1 Dev 1）----
+    // 元素形态 `pkg|channelId`（见 RuleEngine.channelAllowKey）。用 Set 而非 DataStore 的
+    // 布尔键列表：渠道数量随用户使用增长，键名会无限膨胀。
+    private val keyChannelAllowlist = stringSetPreferencesKey("channel_allowlist")
+
+    /**
+     * 已豁免的渠道（跳过 AI 过滤，规则仍生效）。
+     *
+     * 存在意义：抖音这类「同一渠道既发私信又发广告」的场景，模型逐条学习永远追不上
+     * 渠道级抬升，普通用户需要一条**不需要理解模型**的出路。
+     */
+    val channelAllowlist: Flow<Set<String>> =
+        context.dataStore.data.map { it[keyChannelAllowlist] ?: emptySet() }
+
+    suspend fun setChannelAllowlist(value: Set<String>) {
+        context.dataStore.edit { it[keyChannelAllowlist] = value }
+    }
+
+    /** 把某渠道加入豁免（幂等） */
+    suspend fun allowChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit { it[keyChannelAllowlist] = (it[keyChannelAllowlist] ?: emptySet()) + key }
+    }
+
+    /** 取消某渠道豁免 */
+    suspend fun disallowChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit { it[keyChannelAllowlist] = (it[keyChannelAllowlist] ?: emptySet()) - key }
+    }
+
+    // ---- 渠道一律拦截（2.2.1 vc86：「此渠道不再拦截」的对称面） ----
+    private val keyChannelBlocklist = stringSetPreferencesKey("channel_blocklist")
+
+    /**
+     * 已设为「一律拦截」的渠道（元素形态 `pkg|channelId`，与豁免集合相同）。
+     *
+     * 存在意义：百度网盘这类「整条渠道只发营销」的场景，逐条学习追不上（每条广告文案全新）、
+     * 渠道先验又被护栏封顶 —— 需要一条**确定性**的出口，不依赖模型与学习。
+     */
+    val channelBlocklist: Flow<Set<String>> =
+        context.dataStore.data.map { it[keyChannelBlocklist] ?: emptySet() }
+
+    /** 把某渠道加入一律拦截（幂等），并从豁免集合移除（两集合互斥） */
+    suspend fun blockChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit {
+            it[keyChannelBlocklist] = (it[keyChannelBlocklist] ?: emptySet()) + key
+            it[keyChannelAllowlist] = (it[keyChannelAllowlist] ?: emptySet()) - key
+        }
+    }
+
+    /** 取消某渠道的一律拦截 */
+    suspend fun unblockChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit { it[keyChannelBlocklist] = (it[keyChannelBlocklist] ?: emptySet()) - key }
+    }
+
     /** 清理截止时间戳：now - 保留天数（purgeOlderThan 的 cutoff） */
     suspend fun historyRetentionCutoff(now: Long): Long =
         now - historyRetentionDays.first().toLong() * 86_400_000L

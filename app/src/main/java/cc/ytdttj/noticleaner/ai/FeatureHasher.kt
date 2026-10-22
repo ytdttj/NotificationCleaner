@@ -111,6 +111,19 @@ object FeatureHasher {
         return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
     }
 
+    /**
+     * App 级先验桶（2.2.1 vc87）：按包名聚合，与渠道无关。
+     *
+     * 为什么需要它：mipush 的 channelId 按推送动态生成、营销方多渠道轮换
+     * （百度网盘实测 109478/102668/…），渠道粒度的学习桶与拦截都被绕过；
+     * 而纯文本学习对"伪装成个人生活"的营销有结构性平台期（学 8 条同模板也只到 p≈0.62）。
+     * 先验的正确粒度是**发件人** —— 同 App 的推送性质高度一致。
+     */
+    fun appKey(pkg: String): Int {
+        val units = "app:$pkg".toByteArray(Charsets.UTF_16LE)
+        return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
+    }
+
     /** FNV-1a 32bit（与 Python 逐字节一致） */
     private fun fnv1a32(data: ByteArray, offset: Int, len: Int): Int {
         var h = 0x811C9DC5.toInt()

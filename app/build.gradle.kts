@@ -17,8 +17,8 @@ android {
         // —— Android 12+ 动态取色全量可用，且无需为低版本维护取色降级路径
         minSdk = 33
         targetSdk = 36
-        versionCode = 82
-        versionName = "2.2.0 Dev 10"
+        versionCode = 88
+        versionName = "2.2.1 Dev 1"
         // 1.3.2（P3-7③）：只保留 arm64-v8a——剔除其余架构（armeabi-v7a/x86/x86_64）
         // 的原生库，精简 APK 体积；目标设备为真机 ARM64（模块端同样仅注入 arm64 设备）
         ndk {
@@ -60,6 +60,15 @@ android {
             "\"https://github.com/ytdttj/NotificationCleaner/releases/download\"")
         buildConfigField("String", "UPDATE_APK_GITEE",
             "\"https://gitee.com/ytdttj/NotiCleaner/releases/download\"")
+
+        // 2.2.1 Dev 1：Greeze「按需解冻」开关（见 keepalive/GreezeWake.kt）。
+        // 每次通知入队时，模块从 system_server 向本应用 ContentProvider 发起一次同步 call，
+        // 制造「外部调用」事件让 Greeze 解冻被冻结的进程 —— 通知投递本身是 oneway 回调、
+        // 不会解冻，而 Greeze 没有定时解冻，导致积压通知要等巧合的调用才放出。
+        // 留编译期开关便于做 A/B：./gradlew assembleRelease -PgreezeWakeOnEnqueue=false
+        val greezeWakeOnEnqueue =
+            (findProperty("greezeWakeOnEnqueue") as String?)?.toBoolean() ?: true
+        buildConfigField("boolean", "GREEZE_WAKE_ON_ENQUEUE", greezeWakeOnEnqueue.toString())
     }
     sourceSets {
         // 1.3.2（P3-7②）：model.bin 已移至 src/main/resources/model/（单通道打包）——
