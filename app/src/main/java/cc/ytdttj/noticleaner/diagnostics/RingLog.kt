@@ -6,9 +6,9 @@ import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.io.StringWriter
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -51,8 +51,12 @@ object RingLog {
     private const val MAX_STACK_CHARS = 4000
     private const val TRIM_PERIOD_HOURS = 1L
 
-    /** 行首时间戳格式（长度固定，供裁剪按前缀解析） */
-    private val tsFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+    /** 行首时间戳格式（长度固定，供裁剪按前缀解析）。
+     *  P1-12：DateTimeFormatter 不可变线程安全——旧 SimpleDateFormat 被写线程（append 的
+     *  format）与裁剪/崩溃线程（parseLeadingTs 的 parse）共享，而非线程安全，可能解析
+     *  失败丢行。项目其它处已统一用 java.time。 */
+    private val tsFormat: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS", Locale.US)
     private const val TS_LEN = 18 // "MM-dd HH:mm:ss.SSS"
 
     private lateinit var dir: File
@@ -181,7 +185,7 @@ object RingLog {
         if (seg.lastMsg != null && seg.count > 1) {
             writer.appendLine("${seg.lastTs} （上行连续重复 ×${seg.count}）${seg.lastMsg}")
         }
-        val stamp = tsFormat.format(Date())
+        val stamp = LocalDateTime.now().format(tsFormat)
         writer.appendLine("$stamp $msg")
         writer.flush()
         seg.lastMsg = msg
@@ -207,7 +211,7 @@ object RingLog {
         seg.lastKey = null
         val w = FileWriter(curFile(module), true)
         w.appendLine(
-            "${tsFormat.format(Date())} （环形日志轮转：本模块单文件超 ${MAX_FILE_BYTES / 1024}KB，" +
+            "${LocalDateTime.now().format(tsFormat)} （环形日志轮转：本模块单文件超 ${MAX_FILE_BYTES / 1024}KB，" +
                 "旧内容移至 $module.old.log）",
         )
         w.flush()
@@ -255,20 +259,26 @@ object RingLog {
     }
 
     /**
-     * 解析行首时间戳。**格式不带年份**（`MM-dd HH:mm:ss.SSS`），SimpleDateFormat 解析后
-     * 会落到 1970 —— 必须回填当前年份，否则 24 小时裁剪会把全部行判为超期删光
+     * 解析行首时间戳。**格式不带年份**（`MM-dd HH:mm:ss.SSS`），解析结果缺年份——
+     * 必须回填当前年份，否则 24 小时裁剪会把全部行判为超期删光
      * （2026-09-27 代码评审 P1，实测导出只剩 2 小时）。跨年时（解析结果晚于当前 +1h）
-     * 回退为去年。
+     * 回退为去年。P1-12：改用线程安全的 DateTimeFormatter；解析/回填失败（如 02-29
+     * 遇平年）返回 null，该行跟随上一条目的去留。
      */
     internal fun parseLeadingTs(line: String): Long? {
         if (line.length < TS_LEN || line[2] != '-' || line[5] != ' ') return null
-        val parsed = runCatching { tsFormat.parse(line.substring(0, TS_LEN)) }.getOrNull() ?: return null
-        val now = System.currentTimeMillis()
-        val cal = Calendar.getInstance()
-        cal.time = parsed
-        cal.set(Calendar.YEAR, Calendar.getInstance().get(Calendar.YEAR))
-        if (cal.timeInMillis > now + 60 * 60 * 1000L) cal.add(Calendar.YEAR, -1)
-        return cal.timeInMillis
+        return runCatching {
+            val parsed = LocalDateTime.parse(line.substring(0, TS_LEN), tsFormat)
+            val now = System.currentTimeMillis()
+            val zone = ZoneId.systemDefault()
+            val millis = parsed.withYear(LocalDateTime.now().year)
+                .atZone(zone).toInstant().toEpochMilli()
+            if (millis > now + 60 * 60 * 1000L) {
+                parsed.withYear(LocalDateTime.now().year - 1).atZone(zone).toInstant().toEpochMilli()
+            } else {
+                millis
+            }
+        }.getOrNull()
     }
 
     /** 崩溃钩子：崩溃栈同步落盘后转发原处理器（保留系统崩溃对话框/ANR 上报语义） */

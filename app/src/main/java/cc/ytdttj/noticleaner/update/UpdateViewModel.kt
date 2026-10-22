@@ -148,6 +148,13 @@ class UpdateViewModel : ViewModel() {
     fun startDownload(release: LatestRelease) {
         downloadJob?.cancel()
         val appCtx = cc.ytdttj.noticleaner.ServiceLocator.appContext
+        // P1-15：versionName 来自远端 JSON，直接拼文件路径——被篡改的 latest*.json 可借
+        // "../../xxx" 越出 update/ 目录写任意文件。字符白名单 + 长度上限，不合法即拒绝。
+        // （versionCode 单调性已由 checkUpdate 的 versionCode > 当前 强制。）
+        if (!Regex("^[A-Za-z0-9 ._\\-]{1,40}$").matches(release.versionName)) {
+            _state.value = UpdateState.Error("更新源返回了非法的版本号：${release.versionName.take(60)}")
+            return
+        }
         // 版本号去空格作为 tag/文件名（Dev 版 "1.3.2 Dev 1" → "1.3.2Dev1"，git tag 与附件名不允许空格）
         val tag = "v" + release.versionName.replace(" ", "")
         val apkName = "NotiCleaner-${release.versionName.replace(" ", "")}.apk"
@@ -272,6 +279,13 @@ class UpdateViewModel : ViewModel() {
                         if (actual != expected) {
                             return "sha256 不匹配（响应被篡改或 CDN 污染）"
                         }
+                        // P1-16：sha256 只证明"内容 = 发布页声明"，源站账号/DNS 被劫持时
+                        // 二者可一起被换。追加签名校验：下载包必须解析为本包名，且签名
+                        // 证书与当前已装包一致，否则拒绝交给安装器（fail-closed）。
+                        verifyApkSignatureMatchesSelf(
+                            cc.ytdttj.noticleaner.ServiceLocator.appContext,
+                            tmp,
+                        )?.let { return it }
                         if (dest.exists()) dest.delete()
                         return if (tmp.renameTo(dest)) null else "写入失败"
                     }
@@ -289,6 +303,34 @@ class UpdateViewModel : ViewModel() {
             }
         }
         return "重定向次数过多"
+    }
+
+    /**
+     * P1-16：下载包签名校验——必须能被 PackageManager 解析、包名等于本包、
+     * 签名证书集合与当前已装包完全一致。@return null=通过，否则拒绝原因。
+     */
+    private fun verifyApkSignatureMatchesSelf(ctx: android.content.Context, apk: File): String? {
+        return runCatching {
+            val pm = ctx.packageManager
+            val flags = android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            val info = pm.getPackageArchiveInfo(apk.absolutePath, flags)
+            if (info == null) return@runCatching "APK 解析失败（非有效安装包）"
+            if (info.packageName != ctx.packageName) {
+                return@runCatching "包名不符：${info.packageName}（拒绝安装）"
+            }
+            val archiveSigs = info.signingInfo?.apkContentsSigners
+                ?: return@runCatching "APK 无签名信息（拒绝安装）"
+            val ownSigs = pm.getPackageInfo(ctx.packageName, flags).signingInfo?.apkContentsSigners
+                ?: return@runCatching "当前包无签名信息（无法比对）"
+            fun digests(sigs: Array<android.content.pm.Signature>): Set<String> = sigs.map {
+                java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) }
+            }.toSet()
+            if (digests(archiveSigs) != digests(ownSigs)) {
+                return@runCatching "签名与当前安装包不一致（拒绝安装）"
+            }
+            null
+        }.getOrElse { "签名校验异常: ${it.message}" }
     }
 
     override fun onCleared() {

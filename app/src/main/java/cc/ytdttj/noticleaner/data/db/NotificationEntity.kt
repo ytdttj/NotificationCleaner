@@ -32,6 +32,21 @@ val FILTERED_DECISIONS = setOf(
 )
 
 /**
+ * P1-20：**决策 → 常驻通知"累计拦截"计数**的唯一映射（NLS 与模块回流共用）。
+ * 旧实现两处各写一份 if 且 CHANNEL_BLOCK 不计入，而历史"已过滤"与 SettingsScreen 的
+ * filteredCount（按 FILTERED_DECISIONS 数库）都含它——同一个"拦截"两个口径。
+ * 统一规则：CHANNEL_BLOCK 归"规则"侧（用户显式配置的确定性拦截，非 AI 判断）；
+ * MANUAL_MARKED_AD 不计数（通知并未被移除，是用户主动标注动作）。
+ *
+ * @return true=计 AI 拦截，false=计规则拦截，null=不计入
+ */
+fun countBucketOf(decision: String): Boolean? = when (decision) {
+    DECISION_FILTERED_BY_AI, DECISION_FILTERED_BY_AI_MODULE -> true
+    DECISION_FILTERED_BY_RULE, DECISION_FILTERED_BY_RULE_MODULE, DECISION_CHANNEL_BLOCK -> false
+    else -> null
+}
+
+/**
  * 通知历史（Plan.md §4）。
  * expireAt = postTime + 7 天；learned=true 的通知永久保留（查询时忽略 expireAt）。
  *

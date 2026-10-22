@@ -11,6 +11,11 @@ local.properties
 captures/
 .cxx/
 
+# ==== 发布签名密钥（P1-6：keystore 与口令绝不入库，离线双备份） ====
+keystore.properties
+*.keystore
+*.jks
+
 # ==== IDE ====
 .idea/
 *.iml

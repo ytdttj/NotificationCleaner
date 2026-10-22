@@ -223,17 +223,35 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    /** 一次性 flush：防抖 500ms → 落盘 → 若落盘期间又有新增则继续，无新增即退出（协程结束，零唤醒） */
+    /**
+     * 一次性 flush：防抖 500ms → 落盘 → 若落盘期间又有新增则继续，无新增即退出（协程结束，零唤醒）。
+     *
+     * P1-13（flush 竞态丢数）：旧实现在普通位置 return——「最终 getAndSet(0,0) 之后、
+     * 协程状态变为 inactive 之前」进来的新增会看到 isActive==true 而不启动新 job，
+     * 这部分计数就滞留到下次进程启动。现改为：退出判定收进 finally 的锁内——
+     * 先置空 flushJob 再检查累积器，锁与 [incrementFiltered] 共用，两个方向都不会漏：
+     * - 新增在 flusher 持锁前进来 → flusher 锁内看到非零，原地重启 flush；
+     * - 新增在 flusher 置空后进来 → incrementFiltered 看到空 job，自己启动 flush。
+     */
     private suspend fun flushPendingCounters() {
-        while (true) {
-            kotlinx.coroutines.delay(500)
-            val ai = pendingAi.getAndSet(0)
-            val rule = pendingRule.getAndSet(0)
-            if (ai == 0 && rule == 0) return
-            runCatching {
-                context.dataStore.edit {
-                    if (ai > 0) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + ai
-                    if (rule > 0) it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + rule
+        try {
+            while (true) {
+                kotlinx.coroutines.delay(500)
+                val ai = pendingAi.getAndSet(0)
+                val rule = pendingRule.getAndSet(0)
+                if (ai == 0 && rule == 0) return
+                runCatching {
+                    context.dataStore.edit {
+                        if (ai > 0) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + ai
+                        if (rule > 0) it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + rule
+                    }
+                }
+            }
+        } finally {
+            synchronized(this) {
+                flushJob = null
+                if (pendingAi.get() > 0 || pendingRule.get() > 0) {
+                    flushJob = countFlushScope.launch { flushPendingCounters() }
                 }
             }
         }

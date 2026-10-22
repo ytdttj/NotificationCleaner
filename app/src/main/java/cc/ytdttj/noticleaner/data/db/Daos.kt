@@ -28,6 +28,13 @@ interface NotificationDao {
         val hash = contentHashOf(n.title, n.content)
         val existing = findByKey(n.key)
         if (existing != null) {
+            // P1-19：同一 sbn.key 槽位被**不同内容**覆盖时，旧标注不能套用到新内容——
+            // refit 用的正是库里的 title/content，旧标签会按新文本继续拟合（把模型带偏），
+            // 且"已学习行永久保留"会让被新内容顶掉的旧标注无法过期。内容哈希变化
+            // 即重置学习状态（新内容视为从未学习，由用户重新标注）。
+            // contentHash==0 为哈希列引入前的存量行（无法判断内容是否变化），
+            // 只刷新哈希、不重置标注，避免升级首日误清真实学习。
+            val contentChanged = existing.contentHash != 0L && existing.contentHash != hash
             update(
                 existing.copy(
                     title = n.title,
@@ -37,6 +44,9 @@ interface NotificationDao {
                     decision = n.decision,
                     expireAt = n.expireAt,
                     contentHash = hash,
+                    learned = if (contentChanged) false else existing.learned,
+                    learnLabel = if (contentChanged) -1 else existing.learnLabel,
+                    learnCount = if (contentChanged) 0 else existing.learnCount,
                 ),
             )
             return SlotOutcome(previousDecision = existing.decision, inserted = false)

@@ -32,6 +32,10 @@ class ModelRepository(private val context: Context) {
     @Volatile
     private var base: SpamModel? = null
 
+    /** P1-11：base 连续加载失败计数（进程内缓存，达上限后不再重试 IO） */
+    @Volatile
+    private var baseLoadFailedCount = 0
+
     @Volatile
     private var effective: SpamModel? = null
 
@@ -236,6 +240,11 @@ class ModelRepository(private val context: Context) {
      * 1.3.2（P3-7②）：model.bin 单通道打包（src/main/resources），APP 端与模块端统一走 classLoader。
      */
     private suspend fun loadBase(): SpamModel? = withContext(Dispatchers.IO) {
+        // P1-11：加载失败要缓存——旧实现每次调用都重读 resources + 解码 0.5MB + CRC + 写
+        // 环形日志，而调用方（get/applyDelta/needsRefit）在每条通知路径上都会进来；
+        // model.bin 损坏时等于每条通知重跑一遍失败。有限重试（3 次）兜底"临时 IO 抖动"，
+        // 超过后进程内不再重试（重装/升级 = 新进程，自然恢复）。
+        if (baseLoadFailedCount >= BASE_LOAD_RETRY_MAX) return@withContext null
         runCatching {
             base ?: SpamModel::class.java.classLoader
                 ?.getResourceAsStream("model/model.bin")
@@ -243,16 +252,19 @@ class ModelRepository(private val context: Context) {
                 ?.also { base = it }
         }.onSuccess { m ->
             if (m != null) {
+                baseLoadFailedCount = 0
                 cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                     cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
                     "内置模型加载成功 fingerprint=${m.fingerprint}",
                 )
             }
         }.onFailure {
+            baseLoadFailedCount++
             android.util.Log.e("ModelRepository", "内置模型加载失败", it)
             cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                 cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
-                "✗ 内置模型加载失败: ${it.message}（打分将全部按 0.0 放行）",
+                "✗ 内置模型加载失败(${baseLoadFailedCount}/$BASE_LOAD_RETRY_MAX): ${it.message}" +
+                    "（打分将全部按 0.0 放行）",
             )
         }.getOrNull()
     }
@@ -260,6 +272,9 @@ class ModelRepository(private val context: Context) {
     companion object {
         /** 打分 LRU 上限（ImprovePlan P1-3） */
         private const val SCORE_CACHE_MAX = 64
+
+        /** P1-11：base 加载失败重试上限（超过后进程内短路） */
+        private const val BASE_LOAD_RETRY_MAX = 3
 
         /**
          * 学习 schema 版本（2.2.1 Dev 1）。

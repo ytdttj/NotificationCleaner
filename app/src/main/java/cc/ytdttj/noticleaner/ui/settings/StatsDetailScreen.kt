@@ -85,8 +85,13 @@ class StatsDetailViewModel(
     ).stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList(),
     )
+    // P1-20：规则侧明细补上 CHANNEL_BLOCK（渠道一律拦截）与 MANUAL_MARKED_AD（手动学习），
+    // 与历史页"已过滤"（FILTERED_DECISIONS）同口径——旧实现这两类在统计明细里凭空消失
     val filteredByRule = dao.listByDecisions(
-        listOf("FILTERED_BY_RULE", "FILTERED_BY_RULE_MODULE"),
+        listOf(
+            "FILTERED_BY_RULE", "FILTERED_BY_RULE_MODULE",
+            "CHANNEL_BLOCK", "MANUAL_MARKED_AD",
+        ),
     ).stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList(),
     )
@@ -288,6 +293,7 @@ fun StatsDetailScreen(
                                 val reason = when (n.decision) {
                                     "FILTERED_BY_AI", "FILTERED_BY_AI_MODULE" -> "AI ${(n.adProbability * 100).toInt()}%"
                                     "FILTERED_BY_RULE", "FILTERED_BY_RULE_MODULE" -> "规则"
+                                    "CHANNEL_BLOCK" -> "渠道拦截"
                                     DECISION_MANUAL_MARKED_AD -> "手动学习"
                                     else -> ""
                                 }

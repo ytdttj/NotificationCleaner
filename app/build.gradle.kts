@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,6 +7,24 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
 }
+
+// P1-6：专用发布签名接入。keystore.properties 由本机维护（已 gitignore），格式：
+//   storeFile=noticleaner-release.keystore   （相对工程根目录的路径，或绝对路径）
+//   storePassword=...
+//   keyAlias=...
+//   keyPassword=...
+// 文件不存在时 release 保持 unsigned（不阻塞日常构建），由发版脚本用 debug 密钥兜底签名——
+// **正式发版迁移到专用 keystore 后必须删除该兜底路径**，避免误用 debug 密钥发布。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+// 先取成局部变量再进 DSL 作用域——Properties 的 [] 在 signingConfigs 配置块里会被
+// Gradle 的 ExtensionContainer.get 拦截（receiver 劫持），直接索引会编译失败
+val releaseStoreFile: String? = keystoreProps.getProperty("storeFile")
+val releaseStorePassword: String? = keystoreProps.getProperty("storePassword")
+val releaseKeyAlias: String? = keystoreProps.getProperty("keyAlias")
+val releaseKeyPassword: String? = keystoreProps.getProperty("keyPassword")
 
 android {
     namespace = "cc.ytdttj.noticleaner"
@@ -26,10 +46,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseStoreFile != null && releaseStorePassword != null &&
+            releaseKeyAlias != null && releaseKeyPassword != null
+        ) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseStoreFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {

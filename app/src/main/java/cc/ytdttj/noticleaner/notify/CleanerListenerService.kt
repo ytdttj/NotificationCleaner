@@ -480,13 +480,12 @@ class CleanerListenerService : NotificationListenerService() {
         }
     }
 
-    /** 累计拦截计数（1.1.5，常驻通知展示）：仅在新拦截时 +1，同槽位重复更新不重复计数 */
+    /** 累计拦截计数（1.1.5，常驻通知展示）：仅在新拦截时 +1，同槽位重复更新不重复计数。
+     *  P1-20：归入口径统一走 [countBucketOf]（与模块端回流、历史"已过滤"一致）。 */
     private suspend fun countFiltered(decision: String, previous: String?) {
-        val isAi = decision == DECISION_FILTERED_BY_AI
-        val isRule = decision == DECISION_FILTERED_BY_RULE
-        if (!isAi && !isRule) return
         if (previous == decision) return
-        runCatching { ServiceLocator.settings.incrementFiltered(ai = isAi) }
+        val bucket = cc.ytdttj.noticleaner.data.db.countBucketOf(decision) ?: return
+        runCatching { ServiceLocator.settings.incrementFiltered(ai = bucket) }
     }
 
     /**

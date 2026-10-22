@@ -92,10 +92,12 @@ class ModuleLogProvider : ContentProvider() {
             // 1.3.2（P1-1）：与 NLS 路径共用单事务槽位写入（原三趟独立事务 + 无锁 → 单事务）
             val outcome = dao.upsertSlot(entity, entity.postTime - DEDUP_MS)
             if (outcome?.inserted == true) {
-                // 模块拦截也计入常驻通知统计（与 NLS 路径一致；仅新插入计数）
-                when (entity.decision) {
-                    "FILTERED_BY_AI_MODULE" -> ServiceLocator.settings.incrementFiltered(ai = true)
-                    "FILTERED_BY_RULE_MODULE" -> ServiceLocator.settings.incrementFiltered(ai = false)
+                // 模块拦截也计入常驻通知统计（与 NLS 路径一致；仅新插入计数）。
+                // P1-20：归入口径统一走 countBucketOf——旧 when 只认 AI/RULE_MODULE，
+                // 漏了 CHANNEL_BLOCK（vc86 起模块端渠道拦截也用这个决策回流），
+                // 与历史"已过滤"口径不一致。
+                cc.ytdttj.noticleaner.data.db.countBucketOf(entity.decision)?.let {
+                    ServiceLocator.settings.incrementFiltered(ai = it)
                 }
             }
         }

@@ -355,8 +355,14 @@ object DiagExporter {
         }
     }
 
+    /**
+     * P1-17（CSV 公式注入）：以 `= + - @ \t` 开头的字段前置单引号——通知标题/正文可被
+     * 任意 App 构造成公式（`=cmd|...` 的 DDE 可拉起进程），Excel/WPS 打开导出文件即触发。
+     * RFC 4180 转义照旧。
+     */
     private fun csv(v: String): String {
-        val s = v.replace("\"", "\"\"")
+        val guarded = if (v.isNotEmpty() && v[0] in "=+-@\t") "'" + v else v
+        val s = guarded.replace("\"", "\"\"")
         return if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"$s\"" else s
     }
 
