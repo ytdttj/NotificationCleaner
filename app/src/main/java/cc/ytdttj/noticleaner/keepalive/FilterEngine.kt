@@ -156,12 +156,13 @@ internal class FilterEngine {
         // 渠道已在白名单/豁免判定处取过（channel 变量复用，避免重复构建字符串）
         val chKey = if (channel.isNotEmpty()) FeatureHasher.channelKey(pkg, channel) else null
         // vc87：App 先验桶（fit 三态互斥，delta 里至多一个非零）
-        val p0 = m.scoreNormalized(normalized, FeatureHasher.appKey(pkg), chKey)
-        val p = if (aiText.contains('>') || aiText.contains('＞')) {
-            maxOf(p0, FilterGuards.SPAM_MARK_BOOST)
-        } else {
-            p0
-        }
+        // P1-8：'>' 强抬已删除（与 NLS 同步），语义由模型伪特征桶承载（见 FeatureHasher.GT_KEY）
+        val p = m.scoreNormalized(
+            normalized,
+            FeatureHasher.appKey(pkg),
+            chKey,
+            hasGt = FeatureHasher.hasGtMark(aiText),
+        )
         return if (p >= cfg.threshold) {
             Outcome(true, DECISION_FILTERED_BY_AI_MODULE, p.toFloat(), title, joined)
         } else {

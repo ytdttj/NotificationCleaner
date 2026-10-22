@@ -59,8 +59,8 @@ class SpamModel(
     fun scoreNormalized(normalizedText: String, channelKey: Int?): Double =
         scoreNormalized(normalizedText, appKey = null, channelKey = channelKey)
 
-    fun scoreNormalized(normalizedText: String, appKey: Int?, channelKey: Int?): Double {
-        val counts = FeatureHasher.countsOfNormalized(normalizedText)
+    fun scoreNormalized(normalizedText: String, appKey: Int?, channelKey: Int?, hasGt: Boolean = false): Double {
+        val counts = FeatureHasher.countsOfNormalized(normalizedText, hasGt)
         val aw = if (appKey != null && appKey != 0) weights[appKey].toDouble() else 0.0
         val cw = if (channelKey != null && channelKey != 0) weights[channelKey].toDouble() else 0.0
         if (aw == 0.0 && cw == 0.0) {

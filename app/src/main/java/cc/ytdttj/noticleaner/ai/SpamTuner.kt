@@ -242,7 +242,9 @@ object SpamTuner {
         // 1.3.2（P2-3）：normalize 只做一次——长度校验与计数共用同一归一化结果
         val n = FeatureHasher.normalize(sample.text)
         if (n.length < MIN_LENGTH) return null
-        val counts = FeatureHasher.countsOfNormalized(n)
+        // P1-8：'>' 伪特征与打分路径对称（含 '>' 的样本拟合时能看到 GT 桶，
+        // 用户"学为正常"才能对该桶产生负修正、推翻 base 的 '>' 先验）
+        val counts = FeatureHasher.countsOfNormalized(n, FeatureHasher.hasGtMark(sample.text))
         if (counts.size == 0) return null
         var sq = 0.0
         counts.forEach { _, c -> sq += c.toDouble() * c }

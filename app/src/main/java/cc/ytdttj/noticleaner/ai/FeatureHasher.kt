@@ -52,8 +52,9 @@ object FeatureHasher {
         return sb.toString()
     }
 
-    /** 文本 → (index, count) 原始计数（未 L2 归一化） */
-    fun counts(rawText: String): FeatureCounts = countsOfNormalized(normalize(rawText))
+    /** 文本 → (index, count) 原始计数（未 L2 归一化）。含 '>' 伪特征（见 [hasGtMark]） */
+    fun counts(rawText: String): FeatureCounts =
+        countsOfNormalized(normalize(rawText), hasGtMark(rawText))
 
     /**
      * 已归一化文本 → (index, count) 原始计数（1.2.0，ImprovePlan P1-2）：
@@ -67,7 +68,7 @@ object FeatureHasher {
      *   逐位等价），省去每通知 2×len 的字节数组分配；
      * - 迭代顺序与 Python dict 插入序本就不同序（P2-6 论证），ParityTest 靠 1e-4 容差覆盖。
      */
-    fun countsOfNormalized(normalizedText: String): FeatureCounts {
+    fun countsOfNormalized(normalizedText: String, hasGt: Boolean = false): FeatureCounts {
         // P0-1：表容量必须严格大于 1~3-gram 的最大去重键数（≤ 3n-3，n 为 UTF-16 单元数）。
         // 旧实现固定 2048：normalize 按 500 **码点**截断，astral 字母（U+1D400 系）每个占
         // 2 单元 → n 可达 1000 → 去重键最多 ~2997 > 2048；开放寻址表满后 while(true)
@@ -103,6 +104,26 @@ object FeatureHasher {
                 }
             }
         }
+        // P1-8：'>' 伪特征注入（与 Python train.py 的 feature_buckets 对称）。
+        // 计 1 次、参与 L2 归一化，与文本 n-gram 同一待遇；若与某个 n-gram 哈希撞桶
+        // 则计数合并（Python dict 同语义，双端一致）。
+        if (hasGt) {
+            var slot = GT_KEY and slotMask
+            while (true) {
+                val v = vArr[slot]
+                if (v == 0) {
+                    kArr[slot] = GT_KEY
+                    vArr[slot] = 1
+                    size++
+                    break
+                }
+                if (kArr[slot] == GT_KEY) {
+                    vArr[slot] = v + 1
+                    break
+                }
+                slot = (slot + 1) and slotMask
+            }
+        }
         return FeatureCounts(kArr, vArr, size)
     }
 
@@ -127,6 +148,22 @@ object FeatureHasher {
     fun appKey(pkg: String): Int {
         val units = "app:$pkg".toByteArray(Charsets.UTF_16LE)
         return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
+    }
+
+    /**
+     * '>' 伪特征桶（P1-8）：normalize 删除所有符号（'>' 与全角 '＞' 均属 Sm 类），
+     * 文本 n-gram 永远看不到它们。用固定桶把「原始文本含 > 或 ＞」作为二元特征注入
+     * 计数表（与 Python train.py 的 `feat:gt` 完全同一哈希），base 训练给它小幅正权重，
+     * 端上「学为正常」可对同一桶拟合负修正 —— '>' 的强弱完全由语料与用户标注决定，
+     * 不再有绕过模型的硬性抬升（旧 `max(p, 0.95)` 已删除）。
+     */
+    const val GT_FEATURE_SEED = "feat:gt"
+    val GT_KEY: Int = fnv1a32(GT_FEATURE_SEED.toByteArray(Charsets.UTF_16LE), 0, GT_FEATURE_SEED.length * 2) and (BUCKETS - 1)
+
+    /** 原始文本是否含 '>' 或全角 '＞'（在 normalize 截断**之前**的完整原始文本上判断） */
+    fun hasGtMark(rawText: String): Boolean {
+        for (c in rawText) if (c == '>' || c == '＞') return true
+        return false
     }
 
     /** FNV-1a 32bit（与 Python 逐字节一致） */

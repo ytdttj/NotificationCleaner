@@ -397,13 +397,16 @@ class CleanerListenerService : NotificationListenerService() {
                             } else {
                                 null
                             }
-                            val p0 = modelRepo.scoreCached(pkg, normalized, chKey) ?: 0.0
-                            // 1.1.11：">"/">>" 强广告标记（覆盖全角 ＞），命中抬到 0.95
-                            val p = if (joined.contains('>') || joined.contains('＞')) {
-                                maxOf(p0, FilterGuards.SPAM_MARK_BOOST)
-                            } else {
-                                p0
-                            }
+                            // P1-8：删除 '>' 强抬（max(p, 0.95)）——它绕过模型且无法被学习推翻
+                            //（每条通知都带 '>' 的 App 学 100 次"正常"也仍被拦）。'>' 语义现由
+                            // 模型内的伪特征桶承载（FeatureHasher.GT_KEY，训练语料学出小幅
+                            // 广告权重），用户"学为正常"可对同一桶拟合负修正，翻案成为可能。
+                            val p = modelRepo.scoreCached(
+                                pkg,
+                                normalized,
+                                chKey,
+                                hasGt = cc.ytdttj.noticleaner.ai.FeatureHasher.hasGtMark(joined),
+                            ) ?: 0.0
                             probability = p.toFloat()
                             if (p >= cachedThreshold && cachedIntercept) {
                                 decision = DECISION_FILTERED_BY_AI

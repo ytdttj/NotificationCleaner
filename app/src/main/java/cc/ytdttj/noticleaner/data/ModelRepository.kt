@@ -80,12 +80,17 @@ class ModelRepository(private val context: Context) {
      * 结果带 LRU 缓存（键含模型代数，模型更新后自动失效）。
      * @return 概率；模型不可用时为 null（调用方按 0.0 处理）
      */
-    suspend fun scoreCached(pkg: String, normalizedText: String, channelKey: Int?): Double? {
+    suspend fun scoreCached(
+        pkg: String,
+        normalizedText: String,
+        channelKey: Int?,
+        hasGt: Boolean = false,
+    ): Double? {
         val model = get() ?: return null
-        val key = cacheKey(pkg, normalizedText, channelKey)
+        val key = cacheKey(pkg, normalizedText, channelKey, hasGt)
         synchronized(scoreCache) { scoreCache[key] }?.let { return it }
         // vc87：App 先验桶由 pkg 唯一决定（缓存键已含 pkg，键无需变化）
-        val p = model.scoreNormalized(normalizedText, cc.ytdttj.noticleaner.ai.FeatureHasher.appKey(pkg), channelKey)
+        val p = model.scoreNormalized(normalizedText, cc.ytdttj.noticleaner.ai.FeatureHasher.appKey(pkg), channelKey, hasGt)
         synchronized(scoreCache) { scoreCache[key] = p }
         return p
     }
@@ -95,7 +100,7 @@ class ModelRepository(private val context: Context) {
      * pkg/channelKey 必须与文本一起进哈希，否则不同 App/渠道的同文本通知互相命中
      * （渠道偏置判错）。碰撞概率 ~2^-64 可忽略，属正确性取舍（代码级取舍已在此注明）。
      */
-    private fun cacheKey(pkg: String, normalizedText: String, channelKey: Int?): Long {
+    private fun cacheKey(pkg: String, normalizedText: String, channelKey: Int?, hasGt: Boolean): Long {
         var h = modelEpoch xor -3750763034362895579L // FNV-1a 64 offset basis
         val prime = 0x100000001B3L
         for (c in pkg) {
@@ -112,6 +117,8 @@ class ModelRepository(private val context: Context) {
         h *= prime
         h = h xor (channelKey ?: 0).toLong()
         h *= prime
+        // P1-8：'>' 伪特征开关必须进缓存键，否则同文本"含>/不含>"两种打分互相污染
+        h = h xor if (hasGt) 1L else 0L
         return h
     }
 
