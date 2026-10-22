@@ -76,4 +76,32 @@ class FilterGuardsAndTruncationTest {
             )
         }
     }
+
+    /**
+     * P0-1 回归：500 个互异 astral（非 BMP）字母 → normalize 保留后为 1000 个 UTF-16 单元，
+     * 1~3-gram 去重键最多 ~2997 > 旧实现的固定 2048 槽 → 开放寻址表满后 while(true)
+     * 永久自旋（模块模式跑在 system_server，一条通知即 DoS）。修复后容量按
+     * nextPowerOfTwo(3n+1) 动态取，必须能正常终止。
+     */
+    @Test(timeout = 10_000)
+    fun astralTextDoesNotOverflowCountingTable() {
+        // 从 Mathematical Alphanumeric Symbols（U+1D400..U+1D7CB，全 astral）取 500 个
+        // 互异字母（Lu/Ll，normalize 不会删除），构造最坏输入
+        val sb = StringBuilder()
+        var cp = 0x1D400
+        while (sb.codePointCount(0, sb.length) < 500 && cp <= 0x1D7CB) {
+            val t = Character.getType(cp)
+            if (t == Character.UPPERCASE_LETTER.toInt() || t == Character.LOWERCASE_LETTER.toInt()) {
+                sb.appendCodePoint(cp)
+            }
+            cp++
+        }
+        assertEquals("测试前提：需要凑齐 500 个 astral 字母", 500, sb.codePointCount(0, sb.length))
+        val normalized = FeatureHasher.normalize(sb.toString())
+        assertEquals("astral 字母各占 2 个 UTF-16 单元", 1000, normalized.length)
+        val counts = FeatureHasher.countsOfNormalized(normalized)
+        assertEquals("FeatureCounts.size 与实际非零槽位必须一致", counts.asMap().size, counts.size)
+        // 去重键数上界：n + (n-1) + (n-2) = 3n-3（哈希碰撞只会更少）
+        assertTrue("size=${counts.size} 应落在 (0, 3n-3] 内", counts.size in 1..(3 * 1000 - 3))
+    }
 }

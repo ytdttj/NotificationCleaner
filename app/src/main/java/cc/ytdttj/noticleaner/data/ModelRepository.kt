@@ -147,9 +147,16 @@ class ModelRepository(private val context: Context) {
         schemaFile.writeText(v.toString())
     }
 
-    /** 是否需要重新拟合（标注非空，且基线模型或学习 schema 已变更）。 */
+    /**
+     * 是否需要重新拟合（标注非空时由调用方保证）。
+     *
+     * P0-6：除 schema 外**还要比对基线指纹**——旧实现只查 schema，换 base（如 vc88 的
+     * v9→v12）而 schema 未变时返回 false，启动迁移不触发，已学习用户带着"旧基线上拟合的
+     * 残差"跑新基线，直到打开历史页才被 HistoryViewModel 的指纹比对纠正。CHANGELOG 承诺的
+     * "无需任何操作自动重算"必须靠这里的启动路径兑现。
+     */
     suspend fun needsRefit(): Boolean =
-        learningSchema() != LEARNING_SCHEMA
+        learningSchema() != LEARNING_SCHEMA || tunedFingerprint() != baseFingerprint()
 
     /** 应用新的学习修正：写入 delta 文件并重建生效模型。 */
     suspend fun applyDelta(delta: SpamDelta) = mutex.withLock {

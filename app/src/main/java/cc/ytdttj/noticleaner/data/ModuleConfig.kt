@@ -10,13 +10,14 @@ import kotlinx.serialization.json.Json
  * （文件名 [PREFS_NAME]，libxposed service 将其映射为模块远程偏好），
  * 模块侧 XposedInterface.getRemotePreferences 同名读取并监听变更热更新。
  * 模型学习修正（delta）不经 prefs——经 openRemoteFile("spam_delta.bin") 传二进制，
- * 此处仅携带版本号触发模块重载。
+ * 版本号走独立键 [ModuleConfigCodec.KEY_DELTA_VERSION]（P0-4：**不得**放进本 config JSON——
+ * config 先写、delta 文件后推，版本号若随 config 下发，模块可能在 delta 就绪前就触发重载，
+ * 读到上一版 delta 却把新版本号登记为"已加载"，学习成果从此永久不生效）。
  */
 @Serializable
 data class ModuleConfig(
     val threshold: Float = 0.8f,
     val interceptMode: Boolean = true,
-    val deltaVersion: Long = 0L,
     val whitelist: List<String> = emptyList(),
     val rules: List<ModuleRule> = emptyList(),
     /**

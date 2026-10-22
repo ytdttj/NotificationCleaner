@@ -61,6 +61,9 @@ internal class FilterEngine {
     @Volatile private var model: SpamModel? = null
     @Volatile private var loadedDeltaVersion = Long.MIN_VALUE
 
+    /** P0-4：最近一次从 KEY_DELTA_VERSION 读到的 delta 版本（重试与日志以它为准） */
+    @Volatile private var latestDeltaVersion = 0L
+
     // P0-2：MIUI extraNotification 反射缓存（探测一次，成功缓存 Field/Method，失败永久短路）
     @Volatile private var extraField: java.lang.reflect.Field? = null
     @Volatile private var targetPkgGetter: java.lang.reflect.Method? = null
@@ -172,12 +175,16 @@ internal class FilterEngine {
         try {
             val prefs = api.getRemotePreferences(ModuleConfigCodec.PREFS_NAME)
             refresh(prefs)
+            // P0-4：delta 版本号只认独立键 KEY_DELTA_VERSION（不再藏在 config JSON 里），
+            // 该键由 APP 侧在 delta 文件写完**之后**才写——收到即文件就绪
+            latestDeltaVersion = prefs.getLong(ModuleConfigCodec.KEY_DELTA_VERSION, 0L)
             refreshModel(api)
             val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { p, _ ->
                 runCatching {
                     refresh(p)
+                    latestDeltaVersion = p.getLong(ModuleConfigCodec.KEY_DELTA_VERSION, 0L)
                     refreshModel(api)
-                    android.util.Log.i("NCWatch", "module config hot-updated: rules=${config.rules.size} deltaV=${config.deltaVersion}")
+                    android.util.Log.i("NCWatch", "module config hot-updated: rules=${config.rules.size} deltaV=$latestDeltaVersion")
                 }
             }
             prefs.registerOnSharedPreferenceChangeListener(listener)
@@ -191,7 +198,9 @@ internal class FilterEngine {
         config = next
         allowedChannels = next.allowedChannels.toSet()
         blockedChannels = next.blockedChannels.toSet()
-        compiledRules = next.rules.map { r ->
+        // P0-2：编译时过滤掉用户已禁用的规则——旧实现丢弃了 enabled 位，
+        // "关闭规则"在 LSPosed 模式下形同虚设（NLS 侧 RuleEngine 是检查的）
+        compiledRules = next.rules.filter { it.enabled }.map { r ->
             val set = RuleConditionSet(
                 join = r.join,
                 conditions = r.conditions.map { RuleCondition(it.field, it.mode, it.values) },
@@ -206,7 +215,7 @@ internal class FilterEngine {
      * 重建期间旧模型继续可用，语义为"延迟生效"）。
      */
     private fun refreshModel(api: io.github.libxposed.api.XposedInterface?, attempt: Int = 0) {
-        val version = config.deltaVersion
+        val version = latestDeltaVersion
         if (version == loadedDeltaVersion && model != null) return
         rebuildExecutor.execute { rebuildModel(api, version, attempt) }
     }
@@ -232,14 +241,17 @@ internal class FilterEngine {
                             val delta = SpamDelta.decode(
                                 android.os.ParcelFileDescriptor.AutoCloseInputStream(it),
                             )
-                            if (!delta.isEmpty) {
-                                next = base.withDelta(delta)
-                                deltaApplied = true
-                                android.util.Log.i(
-                                    "NCWatch",
-                                    "module delta v$version loaded: ${delta.indices.size} weights",
-                                )
-                            }
+                            // P0-4：读取并解码成功即视为该版本已应用——**空 delta 也是合法
+                            // 内容**（APP 侧在全部标注取消/重置时推空 delta 覆盖残留旧文件），
+                            // 语义为"回到 base"。旧实现把空 delta 当作"文件未就绪"反复重试，
+                            // 且登记不了版本号。
+                            next = if (delta.isEmpty) base else base.withDelta(delta)
+                            deltaApplied = true
+                            android.util.Log.i(
+                                "NCWatch",
+                                if (delta.isEmpty) "module delta v$version loaded: EMPTY (back to base)"
+                                else "module delta v$version loaded: ${delta.indices.size} weights",
+                            )
                         }
                     }
                 }.onFailure { android.util.Log.w("NCWatch", "module delta load failed: $it") }
@@ -254,7 +266,7 @@ internal class FilterEngine {
                 val delay = DELTA_RETRY_DELAYS_MS[attempt.coerceIn(0, DELTA_RETRY_DELAYS_MS.lastIndex)]
                 android.util.Log.w("NCWatch", "module delta v$version not applied, retry in ${delay}ms")
                 Thread.sleep(delay)
-                rebuildModel(api, config.deltaVersion, attempt + 1)
+                rebuildModel(api, latestDeltaVersion, attempt + 1)
             } else {
                 android.util.Log.w("NCWatch", "module delta v$version gave up after $DELTA_RETRY_MAX retries")
             }
@@ -289,7 +301,7 @@ internal class FilterEngine {
         android.util.Log.w(
             "NCWatch",
             "module model NOT ready -> enqueue filter is PASS-THROUGH " +
-                "(deltaV=${config.deltaVersion}, baseLoadFailed=$baseLoadFailed)",
+                "(deltaV=$latestDeltaVersion, baseLoadFailed=$baseLoadFailed)",
         )
     }
 

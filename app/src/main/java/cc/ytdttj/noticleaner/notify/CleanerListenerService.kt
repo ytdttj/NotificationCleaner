@@ -143,14 +143,18 @@ class CleanerListenerService : NotificationListenerService() {
                         cc.ytdttj.noticleaner.notify.island.IslandNotifier.onSettings(e, p)
                     }
                 }
+                // P0-5：规则/白名单/渠道集合的 Flow 收集必须只在 scope 创建时启动一次。
+                // 旧实现写在 if 外面，而 initScope 会被 App.onCreate 和每次 NLS onCreate
+                // 调用——本项目以"频繁重绑"为常态，每次重绑都新增 4 个收集器且永不取消
+                //（挂在本进程级静态 appScope 上），规则变更被重复编译 N 次。
+                // 2.2.1 Dev 1：渠道豁免集合同步进规则引擎（热路径 O(1) 查询，零 IO）
+                // 2.2.1 vc86：渠道一律拦截集合同样走热同步
+                ServiceLocator.ruleEngine.start(
+                    appScope!!,
+                    channelAllowlist = ServiceLocator.settings.channelAllowlist,
+                    channelBlocklist = ServiceLocator.settings.channelBlocklist,
+                )
             }
-            // 2.2.1 Dev 1：渠道豁免集合同步进规则引擎（热路径 O(1) 查询，零 IO）
-            // 2.2.1 vc86：渠道一律拦截集合同样走热同步
-            ServiceLocator.ruleEngine.start(
-                appScope!!,
-                channelAllowlist = ServiceLocator.settings.channelAllowlist,
-                channelBlocklist = ServiceLocator.settings.channelBlocklist,
-            )
         }
 
         /** 监听服务是否已授权并连接 */

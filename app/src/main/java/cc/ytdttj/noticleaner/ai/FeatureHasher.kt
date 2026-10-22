@@ -68,8 +68,13 @@ object FeatureHasher {
      * - 迭代顺序与 Python dict 插入序本就不同序（P2-6 论证），ParityTest 靠 1e-4 容差覆盖。
      */
     fun countsOfNormalized(normalizedText: String): FeatureCounts {
-        // 容量 2048（2 的幂）：单条通知 500 单元 × 1~3gram 去重后 ≤1497 键，负载因子 <0.75
-        val cap = 2048
+        // P0-1：表容量必须严格大于 1~3-gram 的最大去重键数（≤ 3n-3，n 为 UTF-16 单元数）。
+        // 旧实现固定 2048：normalize 按 500 **码点**截断，astral 字母（U+1D400 系）每个占
+        // 2 单元 → n 可达 1000 → 去重键最多 ~2997 > 2048；开放寻址表满后 while(true)
+        // 找不到空槽会**永久自旋**（模块模式跑在 system_server → 一条通知即 DoS）。
+        // 按 n 动态取 2 的幂（> 3n-3 恒成立），数学上保证永不填满；典型文本（n≤600）
+        // 容量 ≤ 2048，与旧实现的分配开销相当。
+        val cap = nextPowerOfTwo(3 * normalizedText.length + 1).coerceAtLeast(16)
         val slotMask = cap - 1
         val kArr = IntArray(cap)
         val vArr = IntArray(cap)
@@ -132,6 +137,17 @@ object FeatureHasher {
             h *= 0x01000193
         }
         return h
+    }
+
+    /** 最小 ≥ v 的 2 的幂（v ≤ 0 返回 1） */
+    private fun nextPowerOfTwo(v: Int): Int {
+        var c = v - 1
+        c = c or (c shr 1)
+        c = c or (c shr 2)
+        c = c or (c shr 4)
+        c = c or (c shr 8)
+        c = c or (c shr 16)
+        return c + 1
     }
 
     /**

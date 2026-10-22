@@ -56,6 +56,7 @@ class ModuleConfigSync(
                 ServiceLocator.settings.interceptMode,
                 ServiceLocator.modelRepo.deltaVersion,
             ) { rules, whitelist, threshold, intercept, deltaV ->
+                // deltaV 不进 ModuleConfig（P0-4），仅作为"delta 变了要重推"的触发信号
                 CoreConfig(rules, whitelist, threshold, intercept, deltaV)
             }
             combine(
@@ -66,7 +67,6 @@ class ModuleConfigSync(
                 ModuleConfig(
                     threshold = c.threshold,
                     interceptMode = c.intercept,
-                    deltaVersion = c.deltaV,
                     whitelist = c.whitelist.map { it.packageName },
                     rules = c.rules.map { r ->
                         val set = r.conditionSet()
@@ -81,22 +81,21 @@ class ModuleConfigSync(
                     },
                     allowedChannels = allow.toList(),
                     blockedChannels = block.toList(),
-                )
+                ) to c.deltaV
             }
                 .debounce(500)
-                .collect { config ->
+                .collect { (config, deltaV) ->
                     prefs.edit()
                         .putString(ModuleConfigCodec.KEY_CONFIG, ModuleConfigCodec.encode(config))
                         .apply()
-                    // 2.0.1 Dev 11：**先写 delta 文件，再写版本号**——版本号是模块端
-                    // "内容已就绪"的信号。旧顺序（版本号与 config 一起先写、delta 后推）
-                    // 存在 TOCTOU：模块端 OnSharedPreferenceChangeListener 一收到版本号变化
-                    // 就 openRemoteFile 去读，而此时 pushDelta 还没写（或只写了一半）→
-                    // 读到**上一版** delta；更糟的是模块端随后把该版本号登记为"已加载"，
-                    // 之后版本号不再变化就不会重试 → **学习成果在模块端永久不生效**
-                    //（实测：抖音同一条通知 NLS p=0.0025 放行、模块端 p=0.98 拦截）。
-                    if (config.deltaVersion != 0L) pushDelta()
-                    prefs.edit().putLong(ModuleConfigCodec.KEY_DELTA_VERSION, config.deltaVersion).apply()
+                    // P0-4（替代 2.0.1 Dev 11 的顺序设计）：delta 版本号**不再随 KEY_CONFIG 下发**，
+                    // 模块端只认独立键 KEY_DELTA_VERSION，而此键在 delta 文件写入**之后**才落——
+                    // 模块收到版本号时文件必然就绪，彻底消除"读到上一版 delta 却把新版本号
+                    // 登记为已加载 → 学习成果永久不生效"的 TOCTOU（注释见 ModuleConfig.kt）。
+                    // delta 为空（全部标注被取消）也要推：写入合法的空 delta 二进制，
+                    // 覆盖远端残留的旧文件，模块端解码为空 → 回到 base。
+                    if (deltaV != 0L) pushDelta()
+                    prefs.edit().putLong(ModuleConfigCodec.KEY_DELTA_VERSION, deltaV).apply()
                 }
         }
     }
@@ -124,14 +123,20 @@ class ModuleConfigSync(
             runCatching {
                 // Dev 10（P1-3）：经 ModelRepository 在同一锁域取快照，
                 // 不再直接读文件（旧写法与 applyDelta 的写入锁不共享 → 可能推撕裂文件给模块）
-                val bytes = ServiceLocator.modelRepo.deltaSnapshot()
-                if (bytes == null) {
+                // P0-3/P0-4：无 delta 文件（全部标注已取消/重置）也要推**合法的空 delta
+                // 二进制**——远端残留着上一版文件，模块端只有读到"文件为空"才知道该
+                // 回到 base；跳过写入会让它拿残留旧文件继续用旧学习。
+                val snapshot = ServiceLocator.modelRepo.deltaSnapshot()
+                if (snapshot == null) {
                     cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                         cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
-                        "△ delta 未推送：当前无学习修正（模型为内置基线）",
+                        "△ 推送空 delta（无学习修正，模块端将回到基线）",
                     )
-                    return@runCatching
                 }
+                val bytes = snapshot
+                    ?: cc.ytdttj.noticleaner.ai.SpamDelta.empty(
+                        cc.ytdttj.noticleaner.ai.FeatureHasher.BUCKETS,
+                    ).encode()
                 service.openRemoteFile(ModuleConfigCodec.DELTA_REMOTE_FILE)?.use { pfd ->
                     ParcelFileDescriptor.AutoCloseOutputStream(pfd).use { out ->
                         out.write(bytes)

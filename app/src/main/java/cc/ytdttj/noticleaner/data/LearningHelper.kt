@@ -95,6 +95,17 @@ object LearningHelper {
     private suspend fun refitLocked(dao: NotificationDao, modelRepo: ModelRepository): List<NotificationEntity> {
         val labels = dao.listLearnedOnce()
         if (labels.isEmpty()) {
+            // P0-3：空标注不能只写 schema 就返回——applyDelta 是唯一写 delta 的入口，
+            // 跳过它意味着"取消最后一条标注"后旧学习量仍留在内存与 spam_delta.bin 里，
+            // 模型持续被已撤销的标注带偏（README 承诺"取消标注可精确回滚"）。
+            // 补一次空 delta：磁盘 delta 文件被删除、effective 回到 base、deltaVersion
+            // 刷新 → 模块端收到空 delta 回到基线。指纹/schema 一并登记为当前值，
+            // 避免 P0-6 的指纹比对反复误判"需要重拟合"。
+            val base = modelRepo.baseModel()
+            if (base != null) {
+                modelRepo.applyDelta(cc.ytdttj.noticleaner.ai.SpamDelta.empty(base.buckets))
+                modelRepo.setTunedFingerprint(modelRepo.baseFingerprint())
+            }
             // 无标注：也要把 schema 标记为最新，避免每次启动都空跑一趟检查
             modelRepo.setLearningSchema(ModelRepository.LEARNING_SCHEMA)
             return emptyList()
