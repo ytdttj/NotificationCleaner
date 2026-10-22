@@ -28,6 +28,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -941,6 +942,12 @@ fun SettingsScreen(
                     Text(if (advancedOpen) "收起" else "展开", style = MaterialTheme.typography.bodySmall)
                 }
                 if (advancedOpen) {
+                    // 性能（用户反馈：展开后上下滚动掉帧严重）：外层已是全屏级玻璃卡，
+                    // 内部再嵌 NcCard/NcOutlinedButton/NcOutlinedTextField 时，每层都在
+                    // 做 backdrop 采样 + blur/lens RenderEffect 且滚动时逐帧重跑，叠加成
+                    // 十余个实时特效表面 → GPU 打满。置空 LocalGlassBackdrop 让内层组件
+                    // 全部走 glassSurface 的磨砂降级路径（零采样，对话框/弹层同款外观）。
+                    CompositionLocalProvider(cc.ytdttj.noticleaner.ui.glass.LocalGlassBackdrop provides null) {
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(12.dp))
@@ -1116,6 +1123,7 @@ fun SettingsScreen(
                             dismissButton = { TextButton(onClick = { confirmResetModel = false }) { Text("取消") } },
                         )
                     }
+                    } // CompositionLocalProvider（嵌套玻璃降级）
                 }
             }
         }
