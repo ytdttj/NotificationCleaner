@@ -2,6 +2,7 @@
 .gradle/
 build/
 app/build/
+__pycache__/
 
 # ==== Kotlin 编译缓存 ====
 .kotlin/
