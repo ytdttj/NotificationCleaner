@@ -927,6 +927,14 @@ fun SettingsScreen(
         // ---- 高级功能（1.3.0 beta2：默认折叠） ----
         var advancedOpen by remember { mutableStateOf(false) }
         var confirmResetModel by remember { mutableStateOf(false) }
+        // 性能（用户反馈：展开后上下滚动掉帧，第一版只降级内层组件仍卡）：展开后本卡
+        // 从一行标题变成接近全屏的 blur+折射表面，滚动时逐帧全区域重跑——元凶是这张
+        // 大卡本身。展开态把整卡连同内层一切 Nc* 组件统一降为磨砂（glassSurface 的
+        // 无采样路径，对话框同款外观）；收起态保留玻璃质感。
+        CompositionLocalProvider(
+            cc.ytdttj.noticleaner.ui.glass.LocalGlassBackdrop provides
+                if (advancedOpen) null else cc.ytdttj.noticleaner.ui.glass.LocalGlassBackdrop.current,
+        ) {
         cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(
@@ -942,12 +950,6 @@ fun SettingsScreen(
                     Text(if (advancedOpen) "收起" else "展开", style = MaterialTheme.typography.bodySmall)
                 }
                 if (advancedOpen) {
-                    // 性能（用户反馈：展开后上下滚动掉帧严重）：外层已是全屏级玻璃卡，
-                    // 内部再嵌 NcCard/NcOutlinedButton/NcOutlinedTextField 时，每层都在
-                    // 做 backdrop 采样 + blur/lens RenderEffect 且滚动时逐帧重跑，叠加成
-                    // 十余个实时特效表面 → GPU 打满。置空 LocalGlassBackdrop 让内层组件
-                    // 全部走 glassSurface 的磨砂降级路径（零采样，对话框/弹层同款外观）。
-                    CompositionLocalProvider(cc.ytdttj.noticleaner.ui.glass.LocalGlassBackdrop provides null) {
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(12.dp))
@@ -1123,10 +1125,10 @@ fun SettingsScreen(
                             dismissButton = { TextButton(onClick = { confirmResetModel = false }) { Text("取消") } },
                         )
                     }
-                    } // CompositionLocalProvider（嵌套玻璃降级）
                 }
             }
         }
+        } // CompositionLocalProvider（展开态整卡磨砂）
         Spacer(Modifier.height(12.dp))
         // ---- 参考开源项目（Dev 17）：高级功能块下方，跳转开源项目列表 ----
         cc.ytdttj.noticleaner.ui.glass.NcCard(
