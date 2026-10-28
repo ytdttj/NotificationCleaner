@@ -262,19 +262,29 @@ object RingLog {
      * 解析行首时间戳。**格式不带年份**（`MM-dd HH:mm:ss.SSS`），解析结果缺年份——
      * 必须回填当前年份，否则 24 小时裁剪会把全部行判为超期删光
      * （2026-09-27 代码评审 P1，实测导出只剩 2 小时）。跨年时（解析结果晚于当前 +1h）
-     * 回退为去年。P1-12：改用线程安全的 DateTimeFormatter；解析/回填失败（如 02-29
-     * 遇平年）返回 null，该行跟随上一条目的去留。
+     * 回退为去年。
+     *
+     * vc90 回归修复（20261028 设备日志实锤）：P1-12 改 DateTimeFormatter 时用了
+     * `LocalDateTime.parse(...)`，而 java.time **不允许无年份字段直接转 LocalDateTime**
+     * （SimpleDateFormat 会默认 1970，DateTimeFormatter 直接抛
+     * DateTimeParseException）→ parseLeadingTs 全部返回 null → trimLocked 每小时
+     * 把环形日志全删光、导出全部显示"24h 内 0 条"（10-28 诊断包实锤：所有模块 0 条
+     * 而 24h 通知历史 CSV 正常有数据）。改走 TemporalAccessor 手动取 Month-Day/Time
+     * 再回填年份，语义与旧 SimpleDateFormat 版一致。
      */
     internal fun parseLeadingTs(line: String): Long? {
         if (line.length < TS_LEN || line[2] != '-' || line[5] != ' ') return null
         return runCatching {
-            val parsed = LocalDateTime.parse(line.substring(0, TS_LEN), tsFormat)
+            val acc = tsFormat.parse(line.substring(0, TS_LEN))
+            val monthDay = java.time.MonthDay.from(acc)
+            val time = java.time.LocalTime.from(acc)
             val now = System.currentTimeMillis()
             val zone = ZoneId.systemDefault()
-            val millis = parsed.withYear(LocalDateTime.now().year)
-                .atZone(zone).toInstant().toEpochMilli()
+            val millis = monthDay.atYear(java.time.LocalDate.now().year)
+                .atTime(time).atZone(zone).toInstant().toEpochMilli()
             if (millis > now + 60 * 60 * 1000L) {
-                parsed.withYear(LocalDateTime.now().year - 1).atZone(zone).toInstant().toEpochMilli()
+                monthDay.atYear(java.time.LocalDate.now().year - 1)
+                    .atTime(time).atZone(zone).toInstant().toEpochMilli()
             } else {
                 millis
             }

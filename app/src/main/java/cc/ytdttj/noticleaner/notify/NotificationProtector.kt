@@ -1,4 +1,4 @@
-﻿package cc.ytdttj.noticleaner.notify
+package cc.ytdttj.noticleaner.notify
 
 import android.app.Notification
 import cc.ytdttj.noticleaner.data.db.DECISION_CONVERSATION
