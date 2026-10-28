@@ -28,13 +28,25 @@ interface NotificationDao {
         val hash = contentHashOf(n.title, n.content)
         val existing = findByKey(n.key)
         if (existing != null) {
-            // P1-19：同一 sbn.key 槽位被**不同内容**覆盖时，旧标注不能套用到新内容——
-            // refit 用的正是库里的 title/content，旧标签会按新文本继续拟合（把模型带偏），
-            // 且"已学习行永久保留"会让被新内容顶掉的旧标注无法过期。内容哈希变化
-            // 即重置学习状态（新内容视为从未学习，由用户重新标注）。
-            // contentHash==0 为哈希列引入前的存量行（无法判断内容是否变化），
-            // 只刷新哈希、不重置标注，避免升级首日误清真实学习。
             val contentChanged = existing.contentHash != 0L && existing.contentHash != hash
+            // 20261028 用户实锤（vc90 回归修复，替代 P1-19 的重置语义）：
+            // 百度网盘 mipush 广告**复用同一 sbn.key**，每条新广告覆盖同一槽位；
+            // P1-19 在内容变化时重置 learned —— 用户逐条学习"很多条"，每条都被后续
+            // 广告顶掉，已学习页只剩最新一条，App 桶（需同侧 ≥3 条标注）永远凑不齐，
+            // "学习了还是拦不住"。现在改为：**已学习槽位被不同内容顶替时，把旧行冻结
+            // 为独立历史行**（key 加后缀让出原键，标题/内容/标注原样保留——refit 的
+            // 标签仍对应自己的文本），新内容在原键上全新插入。未学习槽位维持原位覆盖。
+            if (contentChanged && existing.learned) {
+                update(existing.copy(key = existing.key + "#L" + existing.postTime))
+                insert(n.copy(contentHash = hash))
+                cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                    cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
+                    "学习槽位被新内容顶替，已冻结原学习行：${n.packageName} ${n.title.take(20)}",
+                )
+                return SlotOutcome(previousDecision = null, inserted = true)
+            }
+            // P1-19（未学习槽位）：内容变化后旧 decision/AI 率已不适用，随新内容刷新；
+            // contentHash==0 为哈希列引入前的存量行，只刷新哈希
             update(
                 existing.copy(
                     title = n.title,
@@ -44,9 +56,6 @@ interface NotificationDao {
                     decision = n.decision,
                     expireAt = n.expireAt,
                     contentHash = hash,
-                    learned = if (contentChanged) false else existing.learned,
-                    learnLabel = if (contentChanged) -1 else existing.learnLabel,
-                    learnCount = if (contentChanged) 0 else existing.learnCount,
                 ),
             )
             return SlotOutcome(previousDecision = existing.decision, inserted = false)
