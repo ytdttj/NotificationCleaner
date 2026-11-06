@@ -98,7 +98,7 @@ object DiagExporter {
         val intercept = settings.interceptMode.first()
         appendLine("==== NotiCleaner 诊断日志（分模块 ZIP）====")
         appendLine("导出时间: ${dayFmt.format(Date(now))}")
-        appendLine("APP 版本: ${BuildConfig.VERSION_NAME} (versionCode=${BuildConfig.VERSION_CODE})")
+        appendLine("APP 版本: ${installedVersionLabel(context)}")
         appendLine("设备: ${Build.MANUFACTURER} ${Build.MODEL}")
         appendLine("系统: Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         appendLine("电池豁免: $exempt")
@@ -148,6 +148,25 @@ object DiagExporter {
 
     // ---------------- 01..09：模块文件 ----------------
 
+    /**
+     * 诊断头部的版本标签：**实时查询已安装版本**而非编译期 BuildConfig——
+     * 覆盖安装后残留的旧进程里 BuildConfig 是旧值（20261106 实锤：设备已装 vc92、
+     * 残留进程仍报 vc91，误导排查）。两者不一致时显式标注，一眼可辨残留进程。
+     */
+    private fun installedVersionLabel(context: android.content.Context): String {
+        val running = "${BuildConfig.VERSION_NAME} (versionCode=${BuildConfig.VERSION_CODE})"
+        return runCatching {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            val installed = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode
+            else @Suppress("DEPRECATION") info.versionCode.toLong()
+            if (installed != BuildConfig.VERSION_CODE.toLong()) {
+                "$running｜⚠ 覆盖安装残留进程：已安装 ${info.versionName} (versionCode=$installed)"
+            } else {
+                running
+            }
+        }.getOrDefault(running)
+    }
+
     private fun buildModuleFile(
         module: String,
         now: Long,
@@ -157,7 +176,7 @@ object DiagExporter {
     ): String = buildString {
         appendLine("==== NotiCleaner 诊断日志 · 模块：${LogModules.title(module)} [$module] ====")
         appendLine("模块内容: ${LogModules.desc(module)}")
-        appendLine("APP 版本: ${BuildConfig.VERSION_NAME} (versionCode=${BuildConfig.VERSION_CODE})")
+        appendLine("APP 版本: ${installedVersionLabel(cc.ytdttj.noticleaner.ServiceLocator.appContext)}")
         appendLine("设备: ${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         appendLine("导出时间: ${dayFmt.format(Date(now))}")
         appendLine("覆盖窗口: ${dayFmt.format(Date(windowStart))} ~ ${dayFmt.format(Date(now))}（完整 24 小时）")
