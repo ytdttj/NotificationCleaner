@@ -33,6 +33,26 @@ object UpdateChecker {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * **已安装版本号唯一真相源**（20261106 事故：BuildConfig 可能是旧值）。
+     *
+     * 实测事故：稳定版 vc92 的 APK 里 classes.dex 与 vc91 逐字节相同——构建缓存没重编，
+     * 清单被改成 92 而 BuildConfig 仍是 91 → 更新检查 `92 > 91` 永远成立 → **装完仍弹窗，
+     * 强制停止也无效**（错值烤进了包里）。BuildConfig 是编译期常量，任何构建缓存/增量
+     * 编译失准都会让它与真实安装版本脱节；PackageManager 查询的是磁盘上的 APK 清单，
+     * 永远与"用户实际装了什么"一致。**所有"当前版本 vs 远端版本"的比较必须用它。**
+     */
+    fun installedVersionCode(context: android.content.Context): Long = runCatching {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode
+        else @Suppress("DEPRECATION") info.versionCode.toLong()
+    }.getOrDefault(BuildConfig.VERSION_CODE.toLong())
+
+    /** 已安装版本名（展示用，同上理由：不读 BuildConfig） */
+    fun installedVersionName(context: android.content.Context): String = runCatching {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    }.getOrNull() ?: BuildConfig.VERSION_NAME
+
     /** @return 通道对应源的最新 latest；该源失败为 null（不做另一源兜底） */
     suspend fun checkLatest(channel: UpdateChannel): CheckResult? = withContext(Dispatchers.IO) {
         val bust = "t=${System.currentTimeMillis()}"

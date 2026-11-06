@@ -120,15 +120,21 @@ class UpdateViewModel : ViewModel() {
             // 2.2.0 Dev 4：必须等通道从 DataStore 读出再查，否则会用默认 STABLE 误判
             val ch = awaitChannel()
             val result = UpdateChecker.checkLatest(ch)
+            // 20261106 事故修复：比较用 PackageManager 的已安装版本，不用 BuildConfig
+            // （vc92 的包里 BuildConfig 仍是 91，导致装完永远提示有新版本）
+            val installedVc = UpdateChecker.installedVersionCode(
+                cc.ytdttj.noticleaner.ServiceLocator.appContext,
+            )
             _state.value = when {
                 result == null -> UpdateState.Error("检查失败：无法访问${if (ch == UpdateChannel.STABLE) " Gitee" else " GitHub"} 更新源")
-                result.release.versionCode > BuildConfig.VERSION_CODE -> {
+                result.release.versionCode > installedVc -> {
                     lastCheckSource = result.source
                     // Dev 9：更新检查结果落环形日志（UPDATE 模块，覆盖 24 小时）
                     cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                         cc.ytdttj.noticleaner.diagnostics.LogModules.UPDATE,
                         "发现新版本 ${result.release.versionName} (vc${result.release.versionCode}) " +
-                            "来源=${result.source} 通道=$ch 当前=vc${BuildConfig.VERSION_CODE}",
+                            "来源=${result.source} 通道=$ch 当前=vc$installedVc " +
+                            "(进程BuildConfig=${cc.ytdttj.noticleaner.BuildConfig.VERSION_CODE})",
                     )
                     UpdateState.Available(result.release)
                 }
@@ -136,7 +142,7 @@ class UpdateViewModel : ViewModel() {
                     cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                         cc.ytdttj.noticleaner.diagnostics.LogModules.UPDATE,
                         "已是最新：通道=$ch 远端=vc${result.release.versionCode} " +
-                            "当前=vc${BuildConfig.VERSION_CODE}",
+                            "当前=vc$installedVc",
                     )
                     UpdateState.UpToDate
                 }
