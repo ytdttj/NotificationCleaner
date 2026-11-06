@@ -78,6 +78,29 @@ class MainActivity : ComponentActivity() {
     private var entryCount by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 覆盖安装残留进程检测（20261106 用户实锤）：
+        // 覆盖安装后正在运行的旧进程**不一定被立即杀死**（实测 InstallerX + HyperOS：
+        // 安装完成 2 秒后旧进程仍在跑自动检查，诊断导出头部也还是旧 versionCode）——
+        // 旧进程里的 BuildConfig.VERSION_CODE 是编译期旧值，update 检查会反复弹
+        // "发现新版本"（用户视角：明明更新完了还弹）。检测到进程版本 ≠ 已安装版本
+        // 即为残留进程，直接杀掉：用户下次点图标即进入新版本，弹窗循环终止。
+        // 放在 onCreate 最前（super 之前亦可，此处保证任何 UI/服务初始化前退出）。
+        runCatching {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            val installed = if (android.os.Build.VERSION.SDK_INT >= 28) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION") info.versionCode.toLong()
+            }
+            if (installed != cc.ytdttj.noticleaner.BuildConfig.VERSION_CODE.toLong()) {
+                android.util.Log.w(
+                    "NCWatch",
+                    "stale process detected: running vc${cc.ytdttj.noticleaner.BuildConfig.VERSION_CODE}, " +
+                        "installed vc$installed -> killProcess",
+                )
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }
+        }
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent { AppTheme { AppRoot() } }

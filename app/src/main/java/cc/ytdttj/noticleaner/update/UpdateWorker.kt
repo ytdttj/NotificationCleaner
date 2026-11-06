@@ -37,7 +37,10 @@ class UpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             )
         }.getOrNull() ?: UpdateChannel.STABLE
         val release = UpdateChecker.checkLatest(channel)?.release ?: return Result.retry()
-        if (release.versionCode <= BuildConfig.VERSION_CODE) return Result.success()
+        // 20261106 事故修复：比较用已安装版本（PackageManager），不用 BuildConfig
+        if (release.versionCode <= UpdateChecker.installedVersionCode(applicationContext)) {
+            return Result.success()
+        }
 
         val ctx = applicationContext
         if (!NotificationManagerCompat.from(ctx).areNotificationsEnabled()) return Result.success()
