@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,6 +7,24 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
 }
+
+// P1-6：专用发布签名接入。keystore.properties 由本机维护（已 gitignore），格式：
+//   storeFile=noticleaner-release.keystore   （相对工程根目录的路径，或绝对路径）
+//   storePassword=...
+//   keyAlias=...
+//   keyPassword=...
+// 文件不存在时 release 保持 unsigned（不阻塞日常构建），由发版脚本用 debug 密钥兜底签名——
+// **正式发版迁移到专用 keystore 后必须删除该兜底路径**，避免误用 debug 密钥发布。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+// 先取成局部变量再进 DSL 作用域——Properties 的 [] 在 signingConfigs 配置块里会被
+// Gradle 的 ExtensionContainer.get 拦截（receiver 劫持），直接索引会编译失败
+val releaseStoreFile: String? = keystoreProps.getProperty("storeFile")
+val releaseStorePassword: String? = keystoreProps.getProperty("storePassword")
+val releaseKeyAlias: String? = keystoreProps.getProperty("keyAlias")
+val releaseKeyPassword: String? = keystoreProps.getProperty("keyPassword")
 
 android {
     namespace = "cc.ytdttj.noticleaner"
@@ -17,8 +37,8 @@ android {
         // —— Android 12+ 动态取色全量可用，且无需为低版本维护取色降级路径
         minSdk = 33
         targetSdk = 36
-        versionCode = 83
-        versionName = "2.2.0"
+        versionCode = 92
+        versionName = "2.2.1"
         // 1.3.2（P3-7③）：只保留 arm64-v8a——剔除其余架构（armeabi-v7a/x86/x86_64）
         // 的原生库，精简 APK 体积；目标设备为真机 ARM64（模块端同样仅注入 arm64 设备）
         ndk {
@@ -26,10 +46,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseStoreFile != null && releaseStorePassword != null &&
+            releaseKeyAlias != null && releaseKeyPassword != null
+        ) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseStoreFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
@@ -60,6 +96,15 @@ android {
             "\"https://github.com/ytdttj/NotificationCleaner/releases/download\"")
         buildConfigField("String", "UPDATE_APK_GITEE",
             "\"https://gitee.com/ytdttj/NotiCleaner/releases/download\"")
+
+        // 2.2.1 Dev 1：Greeze「按需解冻」开关（见 keepalive/GreezeWake.kt）。
+        // 每次通知入队时，模块从 system_server 向本应用 ContentProvider 发起一次同步 call，
+        // 制造「外部调用」事件让 Greeze 解冻被冻结的进程 —— 通知投递本身是 oneway 回调、
+        // 不会解冻，而 Greeze 没有定时解冻，导致积压通知要等巧合的调用才放出。
+        // 留编译期开关便于做 A/B：./gradlew assembleRelease -PgreezeWakeOnEnqueue=false
+        val greezeWakeOnEnqueue =
+            (findProperty("greezeWakeOnEnqueue") as String?)?.toBoolean() ?: true
+        buildConfigField("boolean", "GREEZE_WAKE_ON_ENQUEUE", greezeWakeOnEnqueue.toString())
     }
     sourceSets {
         // 1.3.2（P3-7②）：model.bin 已移至 src/main/resources/model/（单通道打包）——

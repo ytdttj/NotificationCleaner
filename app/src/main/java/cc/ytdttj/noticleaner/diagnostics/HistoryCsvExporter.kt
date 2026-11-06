@@ -39,8 +39,8 @@ object HistoryCsvExporter {
                         n.appName,
                         n.packageName,
                         n.channelName.ifBlank { n.channelId },
-                        n.title,
-                        n.content,
+                        flatten(n.title),
+                        flatten(n.content),
                         "%.2f%%".format(n.adProbability * 100),
                         if (n.learned) "是" else "否",
                         learnLabelOf(n),
@@ -58,11 +58,28 @@ object HistoryCsvExporter {
         else -> "-"
     }
 
-    /** RFC 4180：含引号/逗号/换行的字段包裹双引号，内部引号翻倍 */
-    private fun escape(v: String): String =
-        if (v.contains('"') || v.contains(',') || v.contains('\n') || v.contains('\r')) {
-            "\"" + v.replace("\"", "\"\"") + "\""
+    /**
+     * RFC 4180：含引号/逗号/换行的字段包裹双引号，内部引号翻倍。
+     * P1-17（CSV 公式注入）：通知标题/正文可被任意 App 构造成 `=cmd|...`、`+1`、`@SUM(...)`
+     * 等，Excel/WPS 打开导出文件时会当公式执行（DDE 可拉起进程）。以公式触发字符开头的
+     * 字段前置单引号（Excel 的"文本前缀"，显示为普通文本）。
+     */
+    private fun escape(v: String): String {
+        val safe = if (v.isNotEmpty() && v[0] in "=+-@\t") "'" + v else v
+        return if (safe.contains('"') || safe.contains(',') || safe.contains('\n') || safe.contains('\r')) {
+            "\"" + safe.replace("\"", "\"\"") + "\""
         } else {
-            v
+            safe
         }
+    }
+
+    /** 正文压成单行（与 DiagExporter.flatten 同口径）：裸 CR / U+2028 / U+0085 也算换行 */
+    private fun flatten(v: String): String = buildString(v.length) {
+        for (c in v) append(
+            when (c) {
+                '\n', '\r', '\u2028', '\u0085' -> ' '
+                else -> c
+            },
+        )
+    }
 }

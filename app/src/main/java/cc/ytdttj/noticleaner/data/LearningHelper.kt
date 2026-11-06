@@ -94,7 +94,22 @@ object LearningHelper {
      */
     private suspend fun refitLocked(dao: NotificationDao, modelRepo: ModelRepository): List<NotificationEntity> {
         val labels = dao.listLearnedOnce()
-        if (labels.isEmpty()) return emptyList()
+        if (labels.isEmpty()) {
+            // P0-3：空标注不能只写 schema 就返回——applyDelta 是唯一写 delta 的入口，
+            // 跳过它意味着"取消最后一条标注"后旧学习量仍留在内存与 spam_delta.bin 里，
+            // 模型持续被已撤销的标注带偏（README 承诺"取消标注可精确回滚"）。
+            // 补一次空 delta：磁盘 delta 文件被删除、effective 回到 base、deltaVersion
+            // 刷新 → 模块端收到空 delta 回到基线。指纹/schema 一并登记为当前值，
+            // 避免 P0-6 的指纹比对反复误判"需要重拟合"。
+            val base = modelRepo.baseModel()
+            if (base != null) {
+                modelRepo.applyDelta(cc.ytdttj.noticleaner.ai.SpamDelta.empty(base.buckets))
+                modelRepo.setTunedFingerprint(modelRepo.baseFingerprint())
+            }
+            // 无标注：也要把 schema 标记为最新，避免每次启动都空跑一趟检查
+            modelRepo.setLearningSchema(ModelRepository.LEARNING_SCHEMA)
+            return emptyList()
+        }
         val samples = labels.map {
             SpamTuner.Sample(
                 text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n"),
@@ -104,6 +119,7 @@ object LearningHelper {
                 } else {
                     0
                 },
+                appKey = FeatureHasher.appKey(it.packageName),
                 weight = maxOf(1, it.learnCount),
             )
         }
@@ -118,6 +134,8 @@ object LearningHelper {
         )
         modelRepo.applyDelta(delta)
         modelRepo.setTunedFingerprint(modelRepo.baseFingerprint())
+        // 2.2.1 Dev 1：记录本次拟合所用的学习 schema，避免老 delta 被反复认为"需要迁移"
+        modelRepo.setLearningSchema(ModelRepository.LEARNING_SCHEMA)
 
         // 用新模型刷新已学习行的概率展示
         val effective = modelRepo.get() ?: return labels
@@ -129,12 +147,44 @@ object LearningHelper {
                 } else {
                     null
                 }
-                val p = effective.score(text, chKey).toFloat()
+                val p = effective.score(text, FeatureHasher.appKey(it.packageName), chKey).toFloat()
                 val row = it.copy(adProbability = p)
                 dao.update(row)
                 row
             }
         }
         return updated
+    }
+
+    /**
+     * 某个渠道的标注分布（2.2.1 Dev 1）。
+     *
+     * 用途：用户把某条通知「学为正常」后，若该渠道同时存在大量「广告」标注（尤其混杂），
+     * 说明拦截主要来自**渠道级抬升**，逐条学习追不上——UI 据此给出「此渠道不再拦截」的引导，
+     * 而不是让用户继续无效地一条条点。
+     */
+    data class ChannelMix(val ad: Int, val normal: Int) {
+        val total: Int get() = ad + normal
+
+        /** 两侧都有标注，且少数派占比达到护栏阈值 ⇒ 混杂渠道（渠道桶已被护栏抑制） */
+        val mixed: Boolean
+            get() = total > 0 && minOf(ad, normal) > 0 &&
+                minOf(ad, normal).toFloat() / total >= SpamTuner.CHANNEL_MIXED_RATIO
+    }
+
+    /** 统计 [packageName] + [channelId] 渠道在标注集里的广告 / 正常条数 */
+    suspend fun channelLabelMix(
+        dao: NotificationDao,
+        packageName: String,
+        channelId: String,
+    ): ChannelMix {
+        if (channelId.isEmpty()) return ChannelMix(0, 0)
+        var ad = 0
+        var normal = 0
+        for (n in dao.listLearnedOnce()) {
+            if (n.packageName != packageName || n.channelId != channelId) continue
+            if (n.learnLabel == 1) ad++ else normal++
+        }
+        return ChannelMix(ad, normal)
     }
 }

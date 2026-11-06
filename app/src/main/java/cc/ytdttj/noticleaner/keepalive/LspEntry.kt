@@ -324,11 +324,27 @@ class LspEntry : XposedModule() {
         @Volatile
         private var heartbeatSent = false
 
+        /**
+         * NMS 实例对应的 SystemContext（2.2.1 Dev 1）。
+         * `nmsContext()` 走反射，不能每条通知都做 → 解析一次后缓存。
+         */
+        @Volatile
+        private var serviceContext: android.content.Context? = null
+
         override fun intercept(chain: XposedInterface.Chain): Any? {
+            val ctx = resolveContext(chain)
+
+            // 2.2.1 Dev 1（P0）：先给自己制造一次「外部同步调用」，让 Greeze 把本进程解冻。
+            // 通知投递是 oneway 回调、**不会**解冻被冻结的进程；而 Greeze 没有定时解冻，
+            // 只有"有 binder 调用 / 亮屏 / 启动 Activity"才解冻 —— 所以进程被冻住后，
+            // 积压的通知要等到某个巧合的调用才被放出来（2026-10-14 实证：一次冻结 316 秒，
+            // 期间 7 条通知全部积压，解冻那一毫秒一次性投递）。
+            // 这里只做 1 秒节流 + 投递到独立 worker，**不阻塞 NMS 入队路径**。
+            GreezeWake.request(ctx)
+
             if (!heartbeatSent) {
                 heartbeatSent = true
                 runCatching {
-                    val ctx = chain.thisObject?.let { nmsContext(it) }
                     if (ctx != null) {
                         val hb = android.content.ContentValues().apply {
                             put(cc.ytdttj.noticleaner.provider.ModuleLogProvider.COL_PACKAGE, TARGET)
@@ -381,6 +397,14 @@ class LspEntry : XposedModule() {
 
         private fun nmsContext(service: Any): android.content.Context? =
             HookLogSink.contextOf(null, service)
+
+        /** 解析并缓存 SystemContext（反射只做一次） */
+        private fun resolveContext(chain: XposedInterface.Chain): android.content.Context? {
+            serviceContext?.let { return it }
+            val resolved = chain.thisObject?.let { nmsContext(it) }
+            if (resolved != null) serviceContext = resolved
+            return resolved
+        }
 
     }
 

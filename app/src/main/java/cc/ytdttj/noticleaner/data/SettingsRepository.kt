@@ -115,6 +115,63 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[keyHistoryRetentionDays] = value.coerceIn(1, 90) }
     }
 
+    // ---- 渠道豁免「此渠道不再拦截」（2.2.1 Dev 1）----
+    // 元素形态 `pkg|channelId`（见 RuleEngine.channelAllowKey）。用 Set 而非 DataStore 的
+    // 布尔键列表：渠道数量随用户使用增长，键名会无限膨胀。
+    private val keyChannelAllowlist = stringSetPreferencesKey("channel_allowlist")
+
+    /**
+     * 已豁免的渠道（跳过 AI 过滤，规则仍生效）。
+     *
+     * 存在意义：抖音这类「同一渠道既发私信又发广告」的场景，模型逐条学习永远追不上
+     * 渠道级抬升，普通用户需要一条**不需要理解模型**的出路。
+     */
+    val channelAllowlist: Flow<Set<String>> =
+        context.dataStore.data.map { it[keyChannelAllowlist] ?: emptySet() }
+
+    suspend fun setChannelAllowlist(value: Set<String>) {
+        context.dataStore.edit { it[keyChannelAllowlist] = value }
+    }
+
+    /** 把某渠道加入豁免（幂等） */
+    suspend fun allowChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit { it[keyChannelAllowlist] = (it[keyChannelAllowlist] ?: emptySet()) + key }
+    }
+
+    /** 取消某渠道豁免 */
+    suspend fun disallowChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit { it[keyChannelAllowlist] = (it[keyChannelAllowlist] ?: emptySet()) - key }
+    }
+
+    // ---- 渠道一律拦截（2.2.1 vc86：「此渠道不再拦截」的对称面） ----
+    private val keyChannelBlocklist = stringSetPreferencesKey("channel_blocklist")
+
+    /**
+     * 已设为「一律拦截」的渠道（元素形态 `pkg|channelId`，与豁免集合相同）。
+     *
+     * 存在意义：百度网盘这类「整条渠道只发营销」的场景，逐条学习追不上（每条广告文案全新）、
+     * 渠道先验又被护栏封顶 —— 需要一条**确定性**的出口，不依赖模型与学习。
+     */
+    val channelBlocklist: Flow<Set<String>> =
+        context.dataStore.data.map { it[keyChannelBlocklist] ?: emptySet() }
+
+    /** 把某渠道加入一律拦截（幂等），并从豁免集合移除（两集合互斥） */
+    suspend fun blockChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit {
+            it[keyChannelBlocklist] = (it[keyChannelBlocklist] ?: emptySet()) + key
+            it[keyChannelAllowlist] = (it[keyChannelAllowlist] ?: emptySet()) - key
+        }
+    }
+
+    /** 取消某渠道的一律拦截 */
+    suspend fun unblockChannel(key: String) {
+        if (key.isBlank()) return
+        context.dataStore.edit { it[keyChannelBlocklist] = (it[keyChannelBlocklist] ?: emptySet()) - key }
+    }
+
     /** 清理截止时间戳：now - 保留天数（purgeOlderThan 的 cutoff） */
     suspend fun historyRetentionCutoff(now: Long): Long =
         now - historyRetentionDays.first().toLong() * 86_400_000L
@@ -166,17 +223,35 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    /** 一次性 flush：防抖 500ms → 落盘 → 若落盘期间又有新增则继续，无新增即退出（协程结束，零唤醒） */
+    /**
+     * 一次性 flush：防抖 500ms → 落盘 → 若落盘期间又有新增则继续，无新增即退出（协程结束，零唤醒）。
+     *
+     * P1-13（flush 竞态丢数）：旧实现在普通位置 return——「最终 getAndSet(0,0) 之后、
+     * 协程状态变为 inactive 之前」进来的新增会看到 isActive==true 而不启动新 job，
+     * 这部分计数就滞留到下次进程启动。现改为：退出判定收进 finally 的锁内——
+     * 先置空 flushJob 再检查累积器，锁与 [incrementFiltered] 共用，两个方向都不会漏：
+     * - 新增在 flusher 持锁前进来 → flusher 锁内看到非零，原地重启 flush；
+     * - 新增在 flusher 置空后进来 → incrementFiltered 看到空 job，自己启动 flush。
+     */
     private suspend fun flushPendingCounters() {
-        while (true) {
-            kotlinx.coroutines.delay(500)
-            val ai = pendingAi.getAndSet(0)
-            val rule = pendingRule.getAndSet(0)
-            if (ai == 0 && rule == 0) return
-            runCatching {
-                context.dataStore.edit {
-                    if (ai > 0) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + ai
-                    if (rule > 0) it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + rule
+        try {
+            while (true) {
+                kotlinx.coroutines.delay(500)
+                val ai = pendingAi.getAndSet(0)
+                val rule = pendingRule.getAndSet(0)
+                if (ai == 0 && rule == 0) return
+                runCatching {
+                    context.dataStore.edit {
+                        if (ai > 0) it[keyFilteredAi] = (it[keyFilteredAi] ?: 0) + ai
+                        if (rule > 0) it[keyFilteredRule] = (it[keyFilteredRule] ?: 0) + rule
+                    }
+                }
+            }
+        } finally {
+            synchronized(this) {
+                flushJob = null
+                if (pendingAi.get() > 0 || pendingRule.get() > 0) {
+                    flushJob = countFlushScope.launch { flushPendingCounters() }
                 }
             }
         }

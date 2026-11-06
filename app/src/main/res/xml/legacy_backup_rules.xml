@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    P1-18：Android 11- 设备的旧版备份规则（Android 12+ 读 data_extraction_rules.xml）。
+    与新规则同口径：数据库（通知全文）、日志、模型/学习文件、SharedPreferences 全部排除，
+    云备份不带走任何敏感内容。
+-->
+<full-backup-content>
+    <exclude domain="database" path="." />
+    <exclude domain="file" path="logs" />
+    <exclude domain="file" path="model" />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+</full-backup-content>

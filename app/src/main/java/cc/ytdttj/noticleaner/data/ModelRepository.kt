@@ -25,8 +25,16 @@ class ModelRepository(private val context: Context) {
     private val fingerprintFile: File
         get() = File(context.filesDir, "model/tuned_fp")
 
+    /** 学习 schema 版本文件（2.2.1 Dev 1）：拟合语义变化时用于触发一次性全量重拟合 */
+    private val schemaFile: File
+        get() = File(context.filesDir, "model/learn_schema")
+
     @Volatile
     private var base: SpamModel? = null
+
+    /** P1-11：base 连续加载失败计数（进程内缓存，达上限后不再重试 IO） */
+    @Volatile
+    private var baseLoadFailedCount = 0
 
     @Volatile
     private var effective: SpamModel? = null
@@ -72,11 +80,17 @@ class ModelRepository(private val context: Context) {
      * 结果带 LRU 缓存（键含模型代数，模型更新后自动失效）。
      * @return 概率；模型不可用时为 null（调用方按 0.0 处理）
      */
-    suspend fun scoreCached(pkg: String, normalizedText: String, channelKey: Int?): Double? {
+    suspend fun scoreCached(
+        pkg: String,
+        normalizedText: String,
+        channelKey: Int?,
+        hasGt: Boolean = false,
+    ): Double? {
         val model = get() ?: return null
-        val key = cacheKey(pkg, normalizedText, channelKey)
+        val key = cacheKey(pkg, normalizedText, channelKey, hasGt)
         synchronized(scoreCache) { scoreCache[key] }?.let { return it }
-        val p = model.scoreNormalized(normalizedText, channelKey)
+        // vc87：App 先验桶由 pkg 唯一决定（缓存键已含 pkg，键无需变化）
+        val p = model.scoreNormalized(normalizedText, cc.ytdttj.noticleaner.ai.FeatureHasher.appKey(pkg), channelKey, hasGt)
         synchronized(scoreCache) { scoreCache[key] = p }
         return p
     }
@@ -86,7 +100,7 @@ class ModelRepository(private val context: Context) {
      * pkg/channelKey 必须与文本一起进哈希，否则不同 App/渠道的同文本通知互相命中
      * （渠道偏置判错）。碰撞概率 ~2^-64 可忽略，属正确性取舍（代码级取舍已在此注明）。
      */
-    private fun cacheKey(pkg: String, normalizedText: String, channelKey: Int?): Long {
+    private fun cacheKey(pkg: String, normalizedText: String, channelKey: Int?, hasGt: Boolean): Long {
         var h = modelEpoch xor -3750763034362895579L // FNV-1a 64 offset basis
         val prime = 0x100000001B3L
         for (c in pkg) {
@@ -103,6 +117,8 @@ class ModelRepository(private val context: Context) {
         h *= prime
         h = h xor (channelKey ?: 0).toLong()
         h *= prime
+        // P1-8：'>' 伪特征开关必须进缓存键，否则同文本"含>/不含>"两种打分互相污染
+        h = h xor if (hasGt) 1L else 0L
         return h
     }
 
@@ -124,6 +140,34 @@ class ModelRepository(private val context: Context) {
         fingerprintFile.parentFile?.mkdirs()
         fingerprintFile.writeText(fp.toString())
     }
+
+    /**
+     * 上次拟合所用的**学习 schema 版本**；0 表示尚未拟合过（含老版本遗留 delta）。
+     *
+     * 2.2.1 Dev 1 引入：`SpamTuner.fit` 的语义变了（混杂渠道不建桶 / 渠道桶幅值封顶 /
+     * 重复学习不放大渠道桶）。落盘的 `spam_delta.bin` 是**只增不改的历史产物**——
+     * 老用户文件里可能带着被旧语义灌歪的渠道桶，若不做迁移，本次修复对「已经学过、
+     * 但从此不再点学习」的用户完全不起作用（表现依旧是「学为正常也没用」）。
+     */
+    suspend fun learningSchema(): Int = withContext(Dispatchers.IO) {
+        if (schemaFile.exists()) schemaFile.readText().trim().toIntOrNull() ?: 0 else 0
+    }
+
+    suspend fun setLearningSchema(v: Int) = withContext(Dispatchers.IO) {
+        schemaFile.parentFile?.mkdirs()
+        schemaFile.writeText(v.toString())
+    }
+
+    /**
+     * 是否需要重新拟合（标注非空时由调用方保证）。
+     *
+     * P0-6：除 schema 外**还要比对基线指纹**——旧实现只查 schema，换 base（如 vc88 的
+     * v9→v12）而 schema 未变时返回 false，启动迁移不触发，已学习用户带着"旧基线上拟合的
+     * 残差"跑新基线，直到打开历史页才被 HistoryViewModel 的指纹比对纠正。CHANGELOG 承诺的
+     * "无需任何操作自动重算"必须靠这里的启动路径兑现。
+     */
+    suspend fun needsRefit(): Boolean =
+        learningSchema() != LEARNING_SCHEMA || tunedFingerprint() != baseFingerprint()
 
     /** 应用新的学习修正：写入 delta 文件并重建生效模型。 */
     suspend fun applyDelta(delta: SpamDelta) = mutex.withLock {
@@ -203,6 +247,11 @@ class ModelRepository(private val context: Context) {
      * 1.3.2（P3-7②）：model.bin 单通道打包（src/main/resources），APP 端与模块端统一走 classLoader。
      */
     private suspend fun loadBase(): SpamModel? = withContext(Dispatchers.IO) {
+        // P1-11：加载失败要缓存——旧实现每次调用都重读 resources + 解码 0.5MB + CRC + 写
+        // 环形日志，而调用方（get/applyDelta/needsRefit）在每条通知路径上都会进来；
+        // model.bin 损坏时等于每条通知重跑一遍失败。有限重试（3 次）兜底"临时 IO 抖动"，
+        // 超过后进程内不再重试（重装/升级 = 新进程，自然恢复）。
+        if (baseLoadFailedCount >= BASE_LOAD_RETRY_MAX) return@withContext null
         runCatching {
             base ?: SpamModel::class.java.classLoader
                 ?.getResourceAsStream("model/model.bin")
@@ -210,16 +259,19 @@ class ModelRepository(private val context: Context) {
                 ?.also { base = it }
         }.onSuccess { m ->
             if (m != null) {
+                baseLoadFailedCount = 0
                 cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                     cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
                     "内置模型加载成功 fingerprint=${m.fingerprint}",
                 )
             }
         }.onFailure {
+            baseLoadFailedCount++
             android.util.Log.e("ModelRepository", "内置模型加载失败", it)
             cc.ytdttj.noticleaner.diagnostics.RingLog.log(
                 cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
-                "✗ 内置模型加载失败: ${it.message}（打分将全部按 0.0 放行）",
+                "✗ 内置模型加载失败(${baseLoadFailedCount}/$BASE_LOAD_RETRY_MAX): ${it.message}" +
+                    "（打分将全部按 0.0 放行）",
             )
         }.getOrNull()
     }
@@ -227,5 +279,20 @@ class ModelRepository(private val context: Context) {
     companion object {
         /** 打分 LRU 上限（ImprovePlan P1-3） */
         private const val SCORE_CACHE_MAX = 64
+
+        /** P1-11：base 加载失败重试上限（超过后进程内短路） */
+        private const val BASE_LOAD_RETRY_MAX = 3
+
+        /**
+         * 学习 schema 版本（2.2.1 Dev 1）。
+         *
+         * **每次改动 `SpamTuner.fit` 的拟合语义都必须 +1**，否则老用户已落盘的 delta
+         * 不会重算，修复等于没发布。历史：
+         * - 1：1.1.11 引入通道桶 / 样本权重
+         * - 2：2.2.1 Dev 1 渠道桶护栏（混杂渠道不建桶 + 幅值封顶 + 重复学习不放大渠道桶）
+         * - 3：2.2.1 vc86 纯渠道解除封顶（同侧 ≥3 条标注的渠道放宽到 ±8）
+         * - 4：2.2.1 vc87 App 级先验桶（纯 App 桶接管渠道桶，三态互斥）
+         */
+        const val LEARNING_SCHEMA = 4
     }
 }

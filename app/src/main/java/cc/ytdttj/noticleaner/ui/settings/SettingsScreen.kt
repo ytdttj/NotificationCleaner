@@ -28,6 +28,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -926,6 +927,14 @@ fun SettingsScreen(
         // ---- 高级功能（1.3.0 beta2：默认折叠） ----
         var advancedOpen by remember { mutableStateOf(false) }
         var confirmResetModel by remember { mutableStateOf(false) }
+        // 性能（用户反馈：展开后上下滚动掉帧，第一版只降级内层组件仍卡）：展开后本卡
+        // 从一行标题变成接近全屏的 blur+折射表面，滚动时逐帧全区域重跑——元凶是这张
+        // 大卡本身。展开态把整卡连同内层一切 Nc* 组件统一降为磨砂（glassSurface 的
+        // 无采样路径，对话框同款外观）；收起态保留玻璃质感。
+        CompositionLocalProvider(
+            cc.ytdttj.noticleaner.ui.glass.LocalGlassBackdrop provides
+                if (advancedOpen) null else cc.ytdttj.noticleaner.ui.glass.LocalGlassBackdrop.current,
+        ) {
         cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Row(
@@ -1119,6 +1128,7 @@ fun SettingsScreen(
                 }
             }
         }
+        } // CompositionLocalProvider（展开态整卡磨砂）
         Spacer(Modifier.height(12.dp))
         // ---- 参考开源项目（Dev 17）：高级功能块下方，跳转开源项目列表 ----
         cc.ytdttj.noticleaner.ui.glass.NcCard(

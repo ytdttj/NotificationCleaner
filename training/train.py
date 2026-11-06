@@ -98,6 +98,9 @@ PARITY_TEXTS = [
     "A",
     "等等党又赢了！925马力+CCD悬挂+浩瀚H7，补贴8.8万带劲不？",
     "【你有即将获得的徽章】电音曲风LV3获取进度已超过90%，快来升级吧",
+    # P1-8：'>' 伪特征双向往返——广告句式与正常句式各一条（全角/半角各覆盖）
+    "【商城】限时秒杀＞全场5折＞点击领取优惠券＞手慢无",
+    "您的快递已发出＞预计明日送达＞中通快递",
 ]
 
 # ========================= 标签归一化（显式标签列时使用） =========================
@@ -131,6 +134,18 @@ def fnv1a32(data: bytes) -> int:
     return h
 
 
+# P1-8：'>' 伪特征桶（与 Kotlin FeatureHasher.GT_KEY 同一种子、同一哈希）。
+# normalize_text 删除所有 P*/S* 字符（'>' 与全角 '＞' 均属 Sm），文本 n-gram 永远看不到
+# 它们 —— 用固定桶把「完整原始文本含 > 或 ＞」作为二元特征注入计数表（count=1，
+# 参与 L2 归一化，与文本 n-gram 同一待遇）。
+GT_FEATURE_SEED = "feat:gt"
+GT_KEY = fnv1a32(GT_FEATURE_SEED.encode("utf-16-le")) & (BUCKETS - 1)
+# 训练完成后给 GT 桶追加的小幅广告先验（logit 权重单位，与学到的文本特征同尺度）。
+# 受 L2 归一化稀释，实际对 z 的贡献 ≈ bonus/norm（典型 0.05~0.2）——"稍微"而非决定性；
+# 端上「学为正常」会对同一桶拟合负修正，先验可被用户标注推翻。
+GT_PRIOR_BONUS = 3.0
+
+
 def feature_buckets(text: str, ngram_min=NGRAM_MIN, ngram_max=NGRAM_MAX, buckets=BUCKETS) -> dict:
     """UTF-16-LE 字节流的跨词 n-gram 哈希计数。"""
     units = normalize_text(text).encode("utf-16-le", "surrogatepass")
@@ -142,6 +157,9 @@ def feature_buckets(text: str, ngram_min=NGRAM_MIN, ngram_max=NGRAM_MAX, buckets
             chunk = units[start * 2 : (start + n) * 2]
             k = fnv1a32(chunk) & mask
             counts[k] = counts.get(k, 0) + 1
+    # P1-8：'>' 伪特征（在**截断前**的完整原始文本上判断，与 Kotlin hasGtMark 一致）
+    if ">" in text or "＞" in text:
+        counts[GT_KEY] = counts.get(GT_KEY, 0) + 1
     return counts
 
 
@@ -588,6 +606,11 @@ def main():
     clf = LogisticRegression(C=args.C, solver="liblinear", max_iter=1000)
     clf.fit(sms_x_tr, sms_y_tr, sample_weight=sms_w_tr)
 
+    # P1-8：'>' 伪特征小幅广告先验（见 GT_PRIOR_BONUS 注释）。**必须在评估之前写入**
+    # ——否则 quant_drift（clf.predict_proba vs 量化打分）会把 bonus 本身当成"漂移"，
+    # 且报告里的 P/R 不反映真实发布的权重。
+    clf.coef_.reshape(-1)[GT_KEY] += GT_PRIOR_BONUS
+
     sms_eval = {}
     if sms_x_te is not None and len(set(sms_y_te.tolist())) > 1:
         print("[评估] 公共语料留出集:", file=sys.stderr)
@@ -635,6 +658,8 @@ def main():
             "normalization": "lowercase -> remove whitespace/digits(Nd)/'x'",
             "value": "count, L2 normalized over full text",
             "truncateCodepoints": MAX_TEXT_LEN,
+            "gtFeature": "P1-8: binary pseudo-feature bucket hash('feat:gt') set when raw text contains '>' or '＞'; small ad prior added post-fit",
+            "gtPriorBonus": GT_PRIOR_BONUS,
         },
         "trainStats": {
             "corpus": "none" if args.no_sms else ("ham-only" if args.sms_ham_only else "full"),
@@ -666,8 +691,8 @@ def main():
     print(f"       真实留出集 @0.8: P={real_eval['precision']} R={real_eval['recall']} F1={real_eval['f1']}" if real_eval else "", file=sys.stderr)
     print(f"       parity/metadata/report → {out_dir}", file=sys.stderr)
     print(f"       用时 {time.time() - t0:.1f}s", file=sys.stderr)
-    print("[下一步] 将 model.bin 拷入 Android 工程 app/src/main/assets/model/；", file=sys.stderr)
-    print("         用 parity.json 编写 Kotlin FeatureHasher/SpamModel 单元测试验证双端打分一致。", file=sys.stderr)
+    print("[下一步] 将 model.bin 拷入 Android 工程 app/src/main/resources/model/；", file=sys.stderr)
+    print("         parity.json 拷入 app/src/test/resources/；跑 ParityTest 验证双端打分一致。", file=sys.stderr)
 
 
 if __name__ == "__main__":

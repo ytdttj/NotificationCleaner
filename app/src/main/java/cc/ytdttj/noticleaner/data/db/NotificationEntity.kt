@@ -15,6 +15,8 @@ const val DECISION_FILTERED_BY_RULE_MODULE = "FILTERED_BY_RULE_MODULE"
 
 // 保护型决策：默认不参与过滤，仅入库留档并在 UI 标注来源
 const val DECISION_WHITELIST = "WHITELIST" // 白名单 APP（跳过 AI 过滤，规则仍生效）
+const val DECISION_CHANNEL_ALLOW = "CHANNEL_ALLOW" // 渠道豁免（2.2.1 Dev 1：此渠道不再拦截）
+const val DECISION_CHANNEL_BLOCK = "CHANNEL_BLOCK" // 渠道一律拦截（2.2.1 vc86：百度网盘式纯广告渠道的确定性出口）
 const val DECISION_MEDIA = "MEDIA" // 媒体通知（音乐/视频播放控件）
 const val DECISION_CONVERSATION = "CONVERSATION" // 对话通知（MessagingStyle 等）
 const val DECISION_ONGOING = "ONGOING" // 常驻通知（进度条、来电）
@@ -26,7 +28,23 @@ val FILTERED_DECISIONS = setOf(
     DECISION_FILTERED_BY_RULE,
     DECISION_FILTERED_BY_RULE_MODULE,
     DECISION_MANUAL_MARKED_AD,
+    DECISION_CHANNEL_BLOCK,
 )
+
+/**
+ * P1-20：**决策 → 常驻通知"累计拦截"计数**的唯一映射（NLS 与模块回流共用）。
+ * 旧实现两处各写一份 if 且 CHANNEL_BLOCK 不计入，而历史"已过滤"与 SettingsScreen 的
+ * filteredCount（按 FILTERED_DECISIONS 数库）都含它——同一个"拦截"两个口径。
+ * 统一规则：CHANNEL_BLOCK 归"规则"侧（用户显式配置的确定性拦截，非 AI 判断）；
+ * MANUAL_MARKED_AD 不计数（通知并未被移除，是用户主动标注动作）。
+ *
+ * @return true=计 AI 拦截，false=计规则拦截，null=不计入
+ */
+fun countBucketOf(decision: String): Boolean? = when (decision) {
+    DECISION_FILTERED_BY_AI, DECISION_FILTERED_BY_AI_MODULE -> true
+    DECISION_FILTERED_BY_RULE, DECISION_FILTERED_BY_RULE_MODULE, DECISION_CHANNEL_BLOCK -> false
+    else -> null
+}
 
 /**
  * 通知历史（Plan.md §4）。

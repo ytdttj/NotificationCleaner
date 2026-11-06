@@ -28,6 +28,25 @@ interface NotificationDao {
         val hash = contentHashOf(n.title, n.content)
         val existing = findByKey(n.key)
         if (existing != null) {
+            val contentChanged = existing.contentHash != 0L && existing.contentHash != hash
+            // 20261028 用户实锤（vc90 回归修复，替代 P1-19 的重置语义）：
+            // 百度网盘 mipush 广告**复用同一 sbn.key**，每条新广告覆盖同一槽位；
+            // P1-19 在内容变化时重置 learned —— 用户逐条学习"很多条"，每条都被后续
+            // 广告顶掉，已学习页只剩最新一条，App 桶（需同侧 ≥3 条标注）永远凑不齐，
+            // "学习了还是拦不住"。现在改为：**已学习槽位被不同内容顶替时，把旧行冻结
+            // 为独立历史行**（key 加后缀让出原键，标题/内容/标注原样保留——refit 的
+            // 标签仍对应自己的文本），新内容在原键上全新插入。未学习槽位维持原位覆盖。
+            if (contentChanged && existing.learned) {
+                update(existing.copy(key = existing.key + "#L" + existing.postTime))
+                insert(n.copy(contentHash = hash))
+                cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                    cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
+                    "学习槽位被新内容顶替，已冻结原学习行：${n.packageName} ${n.title.take(20)}",
+                )
+                return SlotOutcome(previousDecision = null, inserted = true)
+            }
+            // P1-19（未学习槽位）：内容变化后旧 decision/AI 率已不适用，随新内容刷新；
+            // contentHash==0 为哈希列引入前的存量行，只刷新哈希
             update(
                 existing.copy(
                     title = n.title,

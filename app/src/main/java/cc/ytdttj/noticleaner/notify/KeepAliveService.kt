@@ -201,25 +201,22 @@ class KeepAliveService : Service() {
      *   （Dev 2 真机实测：App 打了"已取消"日志，SystemUI 侧从未出现 notification_canceled，
      *   岛一直不消——用户表现为"点了没反应"）。故广播给 SystemUI 由它自己取消。
      * - 回退路径（代发未就绪）：通知归本 App，自身 cancel 即生效。
+     *
+     * P1-14：不再按"当下 isReady()"二选一——通知可能在 READY 之前走回退路径发出，
+     * 之后 READY 才变 true，用户点"已完成"时二选一会去 SystemUI 取消一个不存在的
+     * id，岛永不消失。两条路径都执行：对不存在的 id，两侧的取消都是无害空操作
+     * （一次广播 + 一次本地 cancel，成本可忽略），归属由"哪边真有这条通知"自然决定。
      */
     private fun handleIslandDismiss(intent: Intent) {
         val id = intent.getIntExtra(EXTRA_ISLAND_NOTIF_ID, -1)
         if (id == -1) return
-        val dispatched = cc.ytdttj.noticleaner.notify.island.IslandDispatch.isReady()
-        if (dispatched) {
-            // 代发：取消动作送回 SystemUI 进程执行
-            cc.ytdttj.noticleaner.notify.island.IslandDispatch.requestSystemUiDismiss(this, id)
-        } else {
-            // 回退：通知归本 App，自己取消
-            runCatching { getSystemService(NotificationManager::class.java).cancel(id) }
-        }
+        // 代发：取消动作送回 SystemUI 进程执行（无此通知时空操作）
+        cc.ytdttj.noticleaner.notify.island.IslandDispatch.requestSystemUiDismiss(this, id)
+        // 回退：通知归本 App 时自己取消（无此通知时空操作）
+        runCatching { getSystemService(NotificationManager::class.java).cancel(id) }
         cc.ytdttj.noticleaner.diagnostics.RingLog.log(
             cc.ytdttj.noticleaner.diagnostics.LogModules.ISLAND,
-            if (dispatched) {
-                "岛通知已完成：用户点击按钮，已请求 SystemUI 取消代发通知 (id=$id)"
-            } else {
-                "岛通知已完成：用户点击按钮，已取消通知 (id=$id, 回退路径)"
-            },
+            "岛通知已完成：用户点击按钮，双路径取消已请求 (id=$id)",
         )
     }
 

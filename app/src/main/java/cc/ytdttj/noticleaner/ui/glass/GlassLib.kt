@@ -648,8 +648,12 @@ fun GlassBottomBar(
     val shellTint = glassSurfaceTint(dark, strong = true, soft = soft)
     val indicatorShadowAlpha = if (soft) 0.08f else 0.14f
 
-    val selectedIndex = items.indexOfFirst { it.route == selectedRoute }.coerceAtLeast(0)
-    var currentIndex by remember { mutableIntStateOf(selectedIndex) }
+    // 2.2.1 vc88 修复：子页面（stats/opensource 等）不属于任何 tab，indexOfFirst 返回 -1，
+    // 此前 coerceAtLeast(0) 把它强转成第 0 个 tab（历史），叠加下方 LaunchedEffect 的
+    // "索引≠路由就回调 onItemClick"副作用 → 从设置页点任何子页面按钮都会被踹回历史页。
+    // 现在子页面时 selectedIndex 为 -1：指示器留在原位、来源 tab 保持高亮，不触发任何导航。
+    val selectedIndex = items.indexOfFirst { it.route == selectedRoute }
+    var currentIndex by remember { mutableIntStateOf(selectedIndex.coerceAtLeast(0)) }
 
     // Dev 4：录底栏自身内容（重复内容层），供选中指示器折射
     val tabsBackdrop = rememberLayerBackdrop()
@@ -677,7 +681,7 @@ fun GlassBottomBar(
     val drag = remember(scope, items.size, density, isLtr) {
         DampedDragAnimation(
             animationScope = scope,
-            initialValue = selectedIndex.toFloat(),
+            initialValue = selectedIndex.coerceAtLeast(0).toFloat(),
             valueRange = 0f..(items.size - 1).toFloat(),
             visibilityThreshold = 0.001f,
             initialScale = 1f,
@@ -705,6 +709,11 @@ fun GlassBottomBar(
                 scope.launch {
                     offsetAnimation.animateTo(0f, spring(1f, 300f, 0.5f))
                 }
+                // 拖动切换与点击走同一条显式回调路径（vc88：替代原先 LaunchedEffect 的自动回调，
+                // 后者在子页面场景会把用户劫持回第一个 tab）
+                if (items.getOrNull(target)?.route != selectedRoute) {
+                    onItemClick(items[target].route)
+                }
             },
             onDrag = { _, dragAmount ->
                 if (tabWidthPx > 0) {
@@ -718,17 +727,11 @@ fun GlassBottomBar(
         ).also { holder.instance = it }
     }
 
-    // 外部选中变化（页面导航/深链）→ 滑过去
+    // 外部选中变化（页面导航/深链）→ 滑过去；子页面（-1）时指示器留在原位
     LaunchedEffect(selectedIndex) {
-        if (currentIndex != selectedIndex) {
+        if (selectedIndex >= 0 && currentIndex != selectedIndex) {
             currentIndex = selectedIndex
             drag.animateToValue(selectedIndex.toFloat())
-        }
-    }
-    // 拖动/点击松手落到新索引 → 回调切换页面
-    LaunchedEffect(currentIndex) {
-        if (items.getOrNull(currentIndex)?.route != selectedRoute) {
-            onItemClick(items[currentIndex].route)
         }
     }
 
@@ -847,7 +850,9 @@ fun GlassBottomBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             items.forEach { item ->
-                val selected = item.route == selectedRoute
+                // 子页面（selectedIndex=-1）时来源 tab 保持高亮（指示器未移动，视觉一致）
+                val selected = item.route == selectedRoute ||
+                    (selectedIndex < 0 && item.route == items.getOrNull(currentIndex)?.route)
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier

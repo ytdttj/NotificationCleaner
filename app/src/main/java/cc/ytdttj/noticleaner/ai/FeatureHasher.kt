@@ -52,8 +52,9 @@ object FeatureHasher {
         return sb.toString()
     }
 
-    /** 文本 → (index, count) 原始计数（未 L2 归一化） */
-    fun counts(rawText: String): FeatureCounts = countsOfNormalized(normalize(rawText))
+    /** 文本 → (index, count) 原始计数（未 L2 归一化）。含 '>' 伪特征（见 [hasGtMark]） */
+    fun counts(rawText: String): FeatureCounts =
+        countsOfNormalized(normalize(rawText), hasGtMark(rawText))
 
     /**
      * 已归一化文本 → (index, count) 原始计数（1.2.0，ImprovePlan P1-2）：
@@ -67,9 +68,14 @@ object FeatureHasher {
      *   逐位等价），省去每通知 2×len 的字节数组分配；
      * - 迭代顺序与 Python dict 插入序本就不同序（P2-6 论证），ParityTest 靠 1e-4 容差覆盖。
      */
-    fun countsOfNormalized(normalizedText: String): FeatureCounts {
-        // 容量 2048（2 的幂）：单条通知 500 单元 × 1~3gram 去重后 ≤1497 键，负载因子 <0.75
-        val cap = 2048
+    fun countsOfNormalized(normalizedText: String, hasGt: Boolean = false): FeatureCounts {
+        // P0-1：表容量必须严格大于 1~3-gram 的最大去重键数（≤ 3n-3，n 为 UTF-16 单元数）。
+        // 旧实现固定 2048：normalize 按 500 **码点**截断，astral 字母（U+1D400 系）每个占
+        // 2 单元 → n 可达 1000 → 去重键最多 ~2997 > 2048；开放寻址表满后 while(true)
+        // 找不到空槽会**永久自旋**（模块模式跑在 system_server → 一条通知即 DoS）。
+        // 按 n 动态取 2 的幂（> 3n-3 恒成立），数学上保证永不填满；典型文本（n≤600）
+        // 容量 ≤ 2048，与旧实现的分配开销相当。
+        val cap = nextPowerOfTwo(3 * normalizedText.length + 1).coerceAtLeast(16)
         val slotMask = cap - 1
         val kArr = IntArray(cap)
         val vArr = IntArray(cap)
@@ -98,6 +104,26 @@ object FeatureHasher {
                 }
             }
         }
+        // P1-8：'>' 伪特征注入（与 Python train.py 的 feature_buckets 对称）。
+        // 计 1 次、参与 L2 归一化，与文本 n-gram 同一待遇；若与某个 n-gram 哈希撞桶
+        // 则计数合并（Python dict 同语义，双端一致）。
+        if (hasGt) {
+            var slot = GT_KEY and slotMask
+            while (true) {
+                val v = vArr[slot]
+                if (v == 0) {
+                    kArr[slot] = GT_KEY
+                    vArr[slot] = 1
+                    size++
+                    break
+                }
+                if (kArr[slot] == GT_KEY) {
+                    vArr[slot] = v + 1
+                    break
+                }
+                slot = (slot + 1) and slotMask
+            }
+        }
         return FeatureCounts(kArr, vArr, size)
     }
 
@@ -111,6 +137,35 @@ object FeatureHasher {
         return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
     }
 
+    /**
+     * App 级先验桶（2.2.1 vc87）：按包名聚合，与渠道无关。
+     *
+     * 为什么需要它：mipush 的 channelId 按推送动态生成、营销方多渠道轮换
+     * （百度网盘实测 109478/102668/…），渠道粒度的学习桶与拦截都被绕过；
+     * 而纯文本学习对"伪装成个人生活"的营销有结构性平台期（学 8 条同模板也只到 p≈0.62）。
+     * 先验的正确粒度是**发件人** —— 同 App 的推送性质高度一致。
+     */
+    fun appKey(pkg: String): Int {
+        val units = "app:$pkg".toByteArray(Charsets.UTF_16LE)
+        return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
+    }
+
+    /**
+     * '>' 伪特征桶（P1-8）：normalize 删除所有符号（'>' 与全角 '＞' 均属 Sm 类），
+     * 文本 n-gram 永远看不到它们。用固定桶把「原始文本含 > 或 ＞」作为二元特征注入
+     * 计数表（与 Python train.py 的 `feat:gt` 完全同一哈希），base 训练给它小幅正权重，
+     * 端上「学为正常」可对同一桶拟合负修正 —— '>' 的强弱完全由语料与用户标注决定，
+     * 不再有绕过模型的硬性抬升（旧 `max(p, 0.95)` 已删除）。
+     */
+    const val GT_FEATURE_SEED = "feat:gt"
+    val GT_KEY: Int = fnv1a32(GT_FEATURE_SEED.toByteArray(Charsets.UTF_16LE), 0, GT_FEATURE_SEED.length * 2) and (BUCKETS - 1)
+
+    /** 原始文本是否含 '>' 或全角 '＞'（在 normalize 截断**之前**的完整原始文本上判断） */
+    fun hasGtMark(rawText: String): Boolean {
+        for (c in rawText) if (c == '>' || c == '＞') return true
+        return false
+    }
+
     /** FNV-1a 32bit（与 Python 逐字节一致） */
     private fun fnv1a32(data: ByteArray, offset: Int, len: Int): Int {
         var h = 0x811C9DC5.toInt()
@@ -119,6 +174,17 @@ object FeatureHasher {
             h *= 0x01000193
         }
         return h
+    }
+
+    /** 最小 ≥ v 的 2 的幂（v ≤ 0 返回 1） */
+    private fun nextPowerOfTwo(v: Int): Int {
+        var c = v - 1
+        c = c or (c shr 1)
+        c = c or (c shr 2)
+        c = c or (c shr 4)
+        c = c or (c shr 8)
+        c = c or (c shr 16)
+        return c + 1
     }
 
     /**

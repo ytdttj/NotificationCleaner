@@ -9,8 +9,10 @@ import java.io.File
 /**
  * 1.2.0（ImprovePlan P1-2）对拍校验：
  * scoreNormalized（接收已归一化文本的新热路径）与 score（原始文本路径）必须逐位一致——
- * 两者共用相同的 counts 构建（countsOfNormalized(normalize(x)) == counts(x)），
+ * 两者共用相同的 counts 构建（countsOfNormalized(normalize(x), hasGt) == counts(x)），
  * 确保消除重复 normalize 不改变决策结果。
+ * P1-8：'>' 伪特征走 hasGt 参数显式传递（normalize 后 '>' 已被删除，热路径
+ * 必须从原始文本探测并透传），样本含 '>'/'>>'/全角 ＞ 的混合用例覆盖该链路。
  */
 class ScoreNormalizedParityTest {
 
@@ -35,7 +37,12 @@ class ScoreNormalizedParityTest {
         for (raw in samples) {
             val normalized = FeatureHasher.normalize(raw)
             val expected = m.score(raw)
-            val actual = m.scoreNormalized(normalized, null)
+            val actual = m.scoreNormalized(
+                normalized,
+                null,
+                null,
+                hasGt = FeatureHasher.hasGtMark(raw),
+            )
             assertEquals(
                 "no-channel mismatch for: ${raw.take(30)}",
                 expected,
@@ -52,7 +59,12 @@ class ScoreNormalizedParityTest {
         for (raw in samples) {
             val normalized = FeatureHasher.normalize(raw)
             val expected = m.score(raw, chKey)
-            val actual = m.scoreNormalized(normalized, chKey)
+            val actual = m.scoreNormalized(
+                normalized,
+                null,
+                chKey,
+                hasGt = FeatureHasher.hasGtMark(raw),
+            )
             assertEquals(
                 "channel mismatch for: ${raw.take(30)}",
                 expected,
@@ -66,7 +78,10 @@ class ScoreNormalizedParityTest {
     fun countsOfNormalizedMatchesCounts() {
         for (raw in samples) {
             val expected = FeatureHasher.counts(raw).asMap()
-            val actual = FeatureHasher.countsOfNormalized(FeatureHasher.normalize(raw)).asMap()
+            val actual = FeatureHasher.countsOfNormalized(
+                FeatureHasher.normalize(raw),
+                FeatureHasher.hasGtMark(raw),
+            ).asMap()
             assertEquals(
                 "counts mismatch for: ${raw.take(30)}",
                 expected,
