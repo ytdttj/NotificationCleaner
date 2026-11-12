@@ -300,4 +300,54 @@ class PaymentExtractorTest {
         assertEquals("45.50", p2!!.amountText)
         assertEquals(PaymentExtractor.Direction.OUT, p2.direction)
     }
+
+    // ---- 2.2.2 误上岛回归：微信支付"优惠已使用，本次节省¥11.1" ----
+    // 旧实现：标题"微信支付"里的"支付"被当成支出动作，"本次节省¥11.1"
+    // 被当成交易金额 → -¥11.1 OUT 上岛。
+
+    @Test
+    fun `微信支付优惠回执 节省金额不算动账`() {
+        assertNull(extract("微信支付", "[2条]微信支付: 优惠已使用，本次节省¥11.1"))
+    }
+
+    @Test
+    fun `优惠回执后仍能取到真交易金额`() {
+        val p = extract("微信支付", "优惠已使用，本次节省¥11.1，实付¥9.90")
+        assertNotNull(p)
+        assertEquals("9.90", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+    }
+
+    @Test
+    fun `微信支付品牌名不再推出支出方向`() {
+        // 标题是服务号名"微信支付"，正文只有营销金额、没有交易动作 → UNKNOWN
+        val p = extract("微信支付", "恭喜获得¥5.00立减金，今日可用")
+        assertNotNull(p)
+        assertEquals(PaymentExtractor.Direction.UNKNOWN, p!!.direction)
+    }
+
+    @Test
+    fun `支付宝品牌名不再推出支出方向`() {
+        val p = extract("支付宝", "您有一张¥5优惠券即将过期")
+        assertNotNull(p)
+        assertEquals(PaymentExtractor.Direction.UNKNOWN, p!!.direction)
+    }
+
+    @Test
+    fun `微信支付成功仍是支出`() {
+        // "微信支付成功"里的支付是动作，不能被品牌名守卫误伤
+        val p = extract("微信支付", "微信支付成功¥9.90")
+        assertNotNull(p)
+        assertEquals("9.90", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+    }
+
+    @Test
+    fun `微信支付已支付通知仍是支出`() {
+        // 真机 2026-11-12 13:36 原文
+        val p = extract("微信支付", "已支付¥9.90")
+        assertNotNull(p)
+        assertEquals("9.90", p!!.amountText)
+        assertEquals(PaymentExtractor.Direction.OUT, p.direction)
+    }
 }

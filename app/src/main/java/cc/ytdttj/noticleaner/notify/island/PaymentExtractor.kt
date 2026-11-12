@@ -50,23 +50,30 @@ object PaymentExtractor {
     )
 
     /**
-     * 余额/额度类关键词（2026-10-06 修复"亲情卡剩余9968.90元误上岛"）：
-     * 金额紧邻在这些词后面时是**存量**不是交易（"剩余9968.90元""余额1,000.00元"
-     * "本期应还3,000.50元"），必须跳过这笔、继续找真交易金额。
-     * 注意不能用"余额"前缀一票否决"余额宝收益2.35元"——"余额宝"三字结尾不命中"余额"。
+     * 非交易金额关键词：金额紧邻在这些词后面时不是实际动账，必须跳过这笔、
+     * 继续找真交易金额（全篇只有这类金额时 extract 返回 null，自然不上岛）。
+     *
+     * - 余额/额度类（2026-10-06 修复"亲情卡剩余9968.90元误上岛"）：
+     *   "剩余9968.90元""余额1,000.00元""本期应还3,000.50元"是**存量**不是交易。
+     *   注意不能用"余额"前缀一票否决"余额宝收益2.35元"——"余额宝"不命中"余额"。
+     * - 优惠/减免类（2.2.2 修复"微信支付：优惠已使用，本次节省¥11.1 误上岛"）：
+     *   "节省/优惠/立减"后面的金额是营销回执里的优惠额，不是用户实际收支。
      */
-    private val BALANCE_WORDS = listOf(
+    private val NON_TRANSACTION_WORDS = listOf(
+        // 余额/额度（存量）
         "剩余", "余额", "可用", "额度", "总额", "净额", "应还", "待还", "已还",
+        // 优惠/减免（营销回执）
+        "节省", "优惠", "立减", "减免", "折扣", "抵扣",
     )
 
-    /** 金额前最多回看几个字符找余额关键词（容忍"额度：5000元"这类分隔符） */
-    private const val BALANCE_LOOKBACK = 6
+    /** 金额前最多回看几个字符找非交易关键词（容忍"额度：5000元"这类分隔符） */
+    private const val NON_TRANSACTION_LOOKBACK = 6
 
-    /** 紧邻金额前的文本是否为余额/额度语义（存量为非交易金额） */
-    private fun isBalanceLike(text: String, matchStart: Int): Boolean {
-        val from = (matchStart - BALANCE_LOOKBACK).coerceAtLeast(0)
+    /** 紧邻金额前的文本是否为余额/优惠语义（非实际动账金额） */
+    private fun isNonTransactionLike(text: String, matchStart: Int): Boolean {
+        val from = (matchStart - NON_TRANSACTION_LOOKBACK).coerceAtLeast(0)
         val prefix = text.substring(from, matchStart).trimEnd(' ', '\u3000', '：', ':', ' ')
-        return BALANCE_WORDS.any { prefix.endsWith(it) }
+        return NON_TRANSACTION_WORDS.any { prefix.endsWith(it) }
     }
 
     /** 收入关键词优先于支出（"您支付的交易已退款"应归收入） */
@@ -75,7 +82,7 @@ object PaymentExtractor {
         "工资", "代发", "返现", "奖励", "利息", "赔付", "理赔", "提现",
     )
     private val EXPENSE_WORDS = listOf(
-        "支付", "付款", "消费", "支出", "扣款", "划扣", "扣除", "转账", "转出",
+        "支付", "实付", "付款", "消费", "支出", "扣款", "划扣", "扣除", "转账", "转出",
         "取现", "取款", "分期", "还款", "缴费", "充值",
     )
 
@@ -87,13 +94,41 @@ object PaymentExtractor {
     //
     // 新策略：方向词几乎总紧贴金额（"扣款人民币52.00""收款¥25"），先在金额
     // 邻接窗口内取**距金额最近**的方向词；窗口内没有再全文回退（保持退款语义）。
-    // "收款"后跟"方/人/商/账/户"是名词（收款方/收款商户），不算收入动作。
+    // "收款"后跟"方/人/商/账/户"是名词（收款方/收款商户），不算收入动作；
+    // "微信支付/支付宝"里的"支付"是品牌名，不算支出动作（2.2.2）。
     private const val WINDOW_BEFORE = 40
     private const val WINDOW_AFTER = 16
 
     /** "收款方/收款人/收款商户/收款账号/收款户名"等名词，不作为收入动作词 */
     private fun isCollecteeNoun(text: String, idx: Int): Boolean =
         text.getOrNull(idx + 2) in setOf('方', '人', '商', '账', '户', '名')
+
+    /**
+     * 品牌/服务号名里的"支付"不是支出动作（2.2.2）：
+     * - "微信支付"是发送方名称，出现在 title 或正文前缀；
+     * - "支付宝"是"支付 + 宝"。
+     * 这两种情况会把无交易动作的金额（如"优惠已使用，本次节省¥11.1"）强行判成 OUT。
+     * 例外：紧跟"成功/失败/完成"时是动作描述（"微信支付成功¥9.90"），仍按支出。
+     */
+    internal fun isBrandPayNoun(text: String, idx: Int): Boolean {
+        if (!text.startsWith("支付", idx)) return false
+        if (text.getOrNull(idx + 2) == '宝') return true
+        if (idx >= 2 && text.startsWith("微信", idx - 2)) {
+            return !listOf("成功", "失败", "完成").any { text.startsWith(it, idx + 2) }
+        }
+        return false
+    }
+
+    /** 全文回退用：排除品牌名里的"支付"（"微信支付"/"支付宝"） */
+    private fun containsExpenseAction(text: String): Boolean =
+        EXPENSE_WORDS.any { w ->
+            var idx = text.indexOf(w)
+            while (idx >= 0) {
+                if (!(w == "支付" && isBrandPayNoun(text, idx))) return true
+                idx = text.indexOf(w, idx + 1)
+            }
+            false
+        }
 
     private fun directionOf(text: String, amountRange: IntRange?, candidates: Int = 1): Direction {
         if (amountRange != null) {
@@ -108,7 +143,10 @@ object PaymentExtractor {
                 for (w in words) {
                     var idx = window.indexOf(w)
                     while (idx >= 0) {
-                        if (!(w == "收款" && isCollecteeNoun(window, idx))) {
+                        if (!(w == "收款" && isCollecteeNoun(window, idx)) &&
+                            // 用全文 + 全局下标判断品牌名，避免"微信支付"被窗口边界截断
+                            !(w == "支付" && isBrandPayNoun(text, from + idx))
+                        ) {
                             // 词与金额区间的间隔：词在金额前→(金额起点-词尾)；在金额后→(词头-金额终点)
                             val dist = if (idx + w.length <= amountStart) {
                                 amountStart - (idx + w.length)
@@ -132,7 +170,7 @@ object PaymentExtractor {
         if (candidates > 1) return Direction.UNKNOWN
         return when {
             INCOME_WORDS.any { text.contains(it) } -> Direction.IN
-            EXPENSE_WORDS.any { text.contains(it) } -> Direction.OUT
+            containsExpenseAction(text) -> Direction.OUT
             else -> Direction.UNKNOWN
         }
     }
@@ -159,9 +197,10 @@ object PaymentExtractor {
             // 扫描到后面的零额时整条被判失败 → 银行扣款不上岛且无任何提示。
             // 末尾 `main ?: return null` 已覆盖"全篇只有零额"的语义（如"手续费0.00元"）。
             if (isZero(amount)) continue
-            // 2026-10-06：余额/额度类金额（"剩余9968.90元"）是存量不是交易，
-            // 跳过这笔继续找真交易金额——亲情卡通知由此落到正文的"消费30.10元"
-            if (isBalanceLike(text, m.range.first)) continue
+            // 2026-10-06：余额/额度类金额（"剩余9968.90元"）是存量不是交易；
+            // 2.2.2：优惠/节省类金额（"本次节省¥11.1"）是营销回执，同样跳过，
+            // 继续找真交易金额——亲情卡通知由此落到正文的"消费30.10元"
+            if (isNonTransactionLike(text, m.range.first)) continue
             candidates++
             if (main == null) {
                 main = currency to amount

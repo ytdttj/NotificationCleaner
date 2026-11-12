@@ -1,11 +1,14 @@
 package cc.ytdttj.noticleaner.notify.island
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -25,7 +28,9 @@ import java.util.concurrent.atomic.AtomicInteger
  *   时 PRIVATE 留痕，判别认证拒绝
  *
  * 触发条件（2026-10-06 起五者同时满足）：包名白名单 + 文本含币种特征金额 +
- * 方向可判定（非 UNKNOWN）+ 微信需含支付动作词（其余白名单包不要求）+ 通知已放行。
+ * 方向可判定（非 UNKNOWN）+ 微信需在正文含支付动作词（其余白名单包不要求）+ 通知已放行。
+ * 2.2.2 再加一层跨来源去重：同金额动账在短窗口内只让银行那条上岛，
+ * 钱包来源押后等待银行；其余通知仍按原决策展示，只是不上岛。
  * 所有路径静默降级，绝不影响通知净化主流程。
  */
 object IslandNotifier {
@@ -116,20 +121,38 @@ object IslandNotifier {
     private val recentPosted = ConcurrentHashMap<String, Long>()
     private val nextId = AtomicInteger(NOTIF_ID_FIRST)
 
+    /** 2.2.2 同金额跨来源去重（钱包押后等银行，银行到达即抢占） */
+    private val txnDeduper = IslandTxnDeduper()
+
+    /** 押后上岛调度：单线程守护，到点后在后台线程补提交 */
+    private val dedupeScheduler = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "IslandTxnDedup").apply { isDaemon = true }
+    }
+
     /**
      * 微信支付场景关键词（2026-10-06 修复"好友分享小程序营销文案误上岛"）：
      * com.tencent.mm 是聊天 App，聊天消息里任何"XX元"都会命中金额正则
      * （实测 2026-10-06 09:34 "领10687元加价券包" 上岛）。白名单内只有支付动作
-     * 类通知才该上岛——标题+正文不含这些词的一律视为聊天/分享，跳过。
+     * 类通知才该上岛——正文不含这些词的一律视为聊天/分享，跳过。
+     *
+     * 2.2.2：只看正文。微信支付服务号通知的标题恒为发送方名"微信支付"，
+     * 若把标题纳入检查，词表里的"支付"永远命中，这道闸对服务号通知等于失效
+     * （"优惠已使用，本次节省¥11.1"就是这样漏上岛的）。正文里的品牌名同样排除。
      */
     private val WECHAT_PAYMENT_WORDS = listOf(
         "红包", "转账", "收款", "付款", "支付", "退款", "到账", "零钱", "佣金", "扣款", "消费", "商户",
     )
 
-    /** 微信通知是否具备支付场景上下文（聊天文本命中任何支付动作词才算） */
-    private fun isWeChatPaymentContext(title: String, content: String): Boolean {
-        val text = "$title\n$content"
-        return WECHAT_PAYMENT_WORDS.any { text.contains(it) }
+    /** 微信通知正文是否具备支付场景上下文（品牌名"微信支付/支付宝"不算支付动作） */
+    internal fun isWeChatPaymentContext(content: String): Boolean {
+        for (w in WECHAT_PAYMENT_WORDS) {
+            var idx = content.indexOf(w)
+            while (idx >= 0) {
+                if (!(w == "支付" && PaymentExtractor.isBrandPayNoun(content, idx))) return true
+                idx = content.indexOf(w, idx + 1)
+            }
+        }
+        return false
     }
 
     /**
@@ -187,8 +210,8 @@ object IslandNotifier {
             return
         }
         // 闸 2——微信非支付场景不上岛：聊天/好友分享里的金额（"领10687元加价券包"）
-        // 没有支付动作词，直接跳过；红包/转账/收款/微信支付服务通知均含关键词不受影响。
-        if (pkg == "com.tencent.mm" && !isWeChatPaymentContext(title, content)) {
+        // 没有支付动作词，直接跳过；只看正文，标题里的发送方名"微信支付"不是场景证据。
+        if (pkg == "com.tencent.mm" && !isWeChatPaymentContext(content)) {
             IslandTrace.log("✗ 微信非支付场景（聊天/分享文本无支付动作词），跳过上岛")
             return
         }
@@ -208,6 +231,66 @@ object IslandNotifier {
         // 清理过期条目，防长期驻留膨胀
         recentPosted.entries.removeIf { now - it.value > DEDUP_WINDOW_MS }
 
+        // 2.2.2 同金额跨来源去重：亲属卡/银行卡消费会同时产生
+        // 支付宝消费 + 支付宝亲属卡扣款 + 银行扣款三条同金额通知，
+        // 只让银行那条上岛；钱包来源押后，等银行到达后抢占。
+        val txnKey = IslandTxnDeduper.TxnKey(
+            currency = payment.currency.name,
+            direction = payment.direction.name,
+            amount = IslandTxnDeduper.canonicalAmount(payment.amountText),
+        )
+        when (val decision = txnDeduper.decide(pkg, txnKey)) {
+            is IslandTxnDeduper.Decision.Skip -> {
+                IslandTrace.log(
+                    "✗ 同金额动账已在 ${IslandTxnDeduper.DEFAULT_WINDOW_MS / 1000} 秒窗口内上岛，跳过" +
+                        "（pkg=$pkg ${payment.capsuleText.trim()}）",
+                )
+            }
+
+            is IslandTxnDeduper.Decision.Post -> {
+                // 银行优先：银行比钱包押后窗口更晚到达时，撤掉已展示的同金额钱包岛
+                decision.dismissIds.forEach { dismissIsland(context, it) }
+                val id = postToIsland(context, sbn, pkg, title, content, payment, receivedAt)
+                if (id != null) txnDeduper.recordPosted(txnKey, decision.source, id)
+            }
+
+            is IslandTxnDeduper.Decision.Hold -> {
+                IslandTrace.log(
+                    "⏳ 钱包动账等待银行通知（同金额去重）：pkg=$pkg " +
+                        "${payment.capsuleText.trim()} delay=${decision.delayMs}ms",
+                )
+                dedupeScheduler.schedule({
+                    if (!txnDeduper.confirmHold(decision.token)) {
+                        IslandTrace.log(
+                            "✗ 等待期内同金额银行动账已上岛，取消钱包上岛：pkg=$pkg " +
+                                payment.capsuleText.trim(),
+                        )
+                        return@schedule
+                    }
+                    val id = postToIsland(context, sbn, pkg, title, content, payment, receivedAt)
+                    if (id == null) {
+                        txnDeduper.forgetPosted(txnKey, IslandTxnDeduper.Source.WALLET)
+                    } else if (!txnDeduper.recordPosted(txnKey, IslandTxnDeduper.Source.WALLET, id)) {
+                        // 提交期间银行岛已抢占：立即撤掉这条钱包岛
+                        dismissIsland(context, id)
+                    }
+                }, decision.delayMs, TimeUnit.MILLISECONDS)
+            }
+        }
+    }
+
+    /**
+     * 构建并提交岛通知；返回通知 id（构建失败返回 null，调用方据此回填/撤销去重登记）。
+     */
+    private fun postToIsland(
+        context: Context,
+        sbn: StatusBarNotification,
+        pkg: String,
+        title: String,
+        content: String,
+        payment: PaymentExtractor.Payment,
+        receivedAt: Long,
+    ): Int? {
         val appName = PACKAGE_LABELS[pkg] ?: appLabel(context, pkg)
         val icon = runCatching {
             IslandParamsBuilder.drawableToBitmap(
@@ -234,7 +317,7 @@ object IslandNotifier {
             )
         }.getOrElse {
             IslandTrace.log("✗ 岛通知构建失败: $it")
-            Log.w(TAG, "build island notification failed", it); return
+            Log.w(TAG, "build island notification failed", it); return null
         }
 
         // Dev 16（方案 B）：优先 SystemUI 代发——以 systemui 身份 notify，白名单/签名/
@@ -256,6 +339,14 @@ object IslandNotifier {
                 ", lag=${cc.ytdttj.noticleaner.diagnostics.DiagTime.lagText(postedAt - sbn.postTime)}" +
                 ", took=${postedAt - receivedAt}ms)",
         )
+        return id
+    }
+
+    /** 双路径撤销一条已上岛的岛通知（代发归 SystemUI / 回退归自身，各 cancel 一次即可） */
+    private fun dismissIsland(context: Context, id: Int) {
+        IslandTrace.log("↩ 同金额银行动账到达，撤销此前钱包岛 (id=$id)")
+        IslandDispatch.requestSystemUiDismiss(context, id)
+        runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(id) }
     }
 
     /**
