@@ -1,0 +1,111 @@
+package cc.ytdttj.noticleaner.ui.glass
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.util.fastCoerceIn
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+
+/**
+ * 按下时的指尖体积光（移植自 REAREye `InteractiveHighlight.kt`）。
+ *
+ * 用 AGSL RuntimeShader 画一个跟随手指的径向光斑，以 `BlendMode.Plus` 叠加。
+ * **关键：`drawContent()` 必须在最后**——光斑先画、玻璃后画，光斑才会被玻璃折射，
+ * 形成 iOS 液态玻璃"光被吸进玻璃内部"的观感；顺序反了就只是普通高光贴图。
+ *
+ * @param position 由调用方提供光心坐标（底栏传"指示器当前 X"，让光斑跟着选中项走）
+ */
+class InteractiveHighlight(
+    private val animationScope: CoroutineScope,
+    private val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset },
+) {
+
+    private val pressProgressAnimationSpec = spring(0.5f, 300f, 0.001f)
+    private val positionAnimationSpec = spring(0.5f, 300f, Offset.VisibilityThreshold)
+
+    private val pressProgressAnimation = Animatable(0f, 0.001f)
+    private val positionAnimation =
+        Animatable(Offset.Zero, Offset.VectorConverter, Offset.VisibilityThreshold)
+
+    private var startPosition = Offset.Zero
+
+    private val shader = android.graphics.RuntimeShader(
+        """
+    uniform float2 size;
+    layout(color) uniform half4 color;
+    uniform float radius;
+    uniform float2 position;
+
+    half4 main(float2 coord) {
+        float dist = distance(coord, position);
+        float intensity = smoothstep(radius, radius * 0.5, dist);
+        return color * intensity;
+    }"""
+    )
+
+    /** 只绘制光斑、不接收手势（挂在底栏外壳上） */
+    val modifier: Modifier = Modifier.drawWithContent {
+        val progress = pressProgressAnimation.value
+        if (progress > 0f) {
+            drawRect(
+                Color.White.copy(0.06f * progress),
+                blendMode = BlendMode.Plus,
+            )
+            shader.apply {
+                val pos = position(size, positionAnimation.value)
+                setFloatUniform("size", size.width, size.height)
+                setColorUniform("color", Color.White.copy(0.12f * progress).toArgb())
+                setFloatUniform("radius", size.minDimension * 1.2f)
+                setFloatUniform(
+                    "position",
+                    pos.x.fastCoerceIn(0f, size.width),
+                    pos.y.fastCoerceIn(0f, size.height),
+                )
+            }
+            drawRect(
+                ShaderBrush(shader),
+                blendMode = BlendMode.Plus,
+            )
+        }
+
+        drawContent()
+    }
+
+    /** 接收手势、驱动光斑位置（挂在选中指示器上） */
+    val gestureModifier: Modifier = Modifier.pointerInput(animationScope) {
+        inspectDragGestures(
+            onDragStart = { down ->
+                startPosition = down.position
+                animationScope.launch {
+                    launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
+                    launch { positionAnimation.snapTo(startPosition) }
+                }
+            },
+            onDragEnd = {
+                animationScope.launch {
+                    launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
+                    launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+                }
+            },
+            onDragCancel = {
+                animationScope.launch {
+                    launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
+                    launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+                }
+            },
+        ) { change, _ ->
+            animationScope.launch { positionAnimation.snapTo(change.position) }
+        }
+    }
+}

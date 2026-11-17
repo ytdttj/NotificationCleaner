@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- INTERNET：仅用于应用内检查更新与下载 APK（模型推理与学习仍全部本地） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 应用内更新引导安装（Android 8+ 需用户一次性授权"安装未知应用"） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 1.2.3：APP 选择器需列出全部应用（含系统应用）——Android 11+ 包可见性过滤需要 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!--
+        Dev 16 岛代发（SystemUI 进程内以 systemui 身份 notify 岛通知）：
+        - 声明 signature 权限：只有同签名（本模块自己）的包能持有，第三方无法伪造发送
+        - SystemUI 进程内的岛派发接收器在注册时要求该权限，框架层校验发送方
+    -->
+    <permission
+        android:name="cc.ytdttj.noticleaner.PERMISSION_DISPATCH_ISLAND"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="cc.ytdttj.noticleaner.PERMISSION_DISPATCH_ISLAND" />
+
+    <application
+        android:name=".App"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/legacy_backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:description="@string/app_description"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NotificationCleaner">
+
+        <!-- Shizuku（用户主动启用保活时才请求授权） -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- 应用内更新：提供下载的 APK 给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 1.2.1：LSPosed 模块拦截记录回流入口（system_server 调用需要 exported）；
+             仅接受 SYSTEM_UID 与自身（Provider 内校验 callingUid） -->
+        <provider
+            android:name=".provider.ModuleLogProvider"
+            android:authorities="${applicationId}.modulelog"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+
+        <!-- LSPosed 模块声明（libxposed API 102 Modern 注册）：
+             入口 META-INF/xposed/java_init.list；元数据 META-INF/xposed/module.prop；
+             作用域 META-INF/xposed/scope.list（system = system_server）。 -->
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".notify.CleanerListenerService"
+            android:exported="true"
+            android:label="@string/service_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".notify.KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="notification_filter_keepalive" />
+        </service>
+
+        <!-- 1.4.0 Dev 15：监听失效提醒的按钮动作（修复/权限设置），仅本应用 PendingIntent -->
+        <receiver
+            android:name=".notify.ListenerRepairActionReceiver"
+            android:exported="false" />
+
+        <!-- 1.4.0 Dev 15：控制中心磁贴——一键修复通知监听 -->
+        <service
+            android:name=".notify.ListenerRepairTileService"
+            android:exported="true"
+            android:label="通知监听修复"
+            android:icon="@drawable/ic_stat_alert"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <!-- ACTIVE_TILE：展开面板即回调 onStartListening，状态实时 -->
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
+        </service>
+
+        <!-- 1.2.1：无障碍保活层（可选）：系统绑定的第二条生命线，空实现不读窗口内容 -->
+        <service
+            android:name=".notify.NotiGuardService"
+            android:exported="false"
+            android:label="@string/noti_guard_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/noti_guard_config" />
+        </service>
+
+        <receiver
+            android:name=".notify.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 1.1.13：Doze 免疫的闹钟看门狗（保活服务被杀后仍维持监听重绑自愈链） -->
+        <receiver
+            android:name=".notify.WatchdogReceiver"
+            android:enabled="true"
+            android:exported="false" />
+    </application>
+</manifest>

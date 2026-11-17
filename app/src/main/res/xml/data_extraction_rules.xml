@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    P1-18：数据备份/迁移规则（Android 12+ 生效，android:fullBackupContent 不再配置）。
+    通知历史数据库（Room）含通知全文——可能带验证码、金额、银行信息，与"数据不出本机"
+    的隐私承诺冲突；环形日志同样可能含通知原文，SharedPreferences 内有渠道/学习相关状态。
+    一律排除出云备份（cloud-backup）与设备迁移（device-transfer），只保留无敏感内容的
+    更新通道设置。学习成果（spam_delta.bin / tuned_fp）同样不外传——它们是本机模型的
+    私有状态，且非文本、对恢复体验无价值。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="logs" />
+        <exclude domain="file" path="model" />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="logs" />
+        <exclude domain="file" path="model" />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

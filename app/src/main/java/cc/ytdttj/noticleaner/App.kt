@@ -1,0 +1,126 @@
+package cc.ytdttj.noticleaner
+
+import android.app.Application
+import cc.ytdttj.noticleaner.data.ModelRepository
+import cc.ytdttj.noticleaner.data.ModuleConfigSync
+import cc.ytdttj.noticleaner.data.SettingsRepository
+import cc.ytdttj.noticleaner.data.db.AppDatabase
+import cc.ytdttj.noticleaner.notify.CleanerListenerService
+import cc.ytdttj.noticleaner.notify.KeepAliveManager
+import cc.ytdttj.noticleaner.notify.RuleEngine
+import io.github.libxposed.service.XposedService
+import io.github.libxposed.service.XposedServiceHelper
+import kotlinx.coroutines.launch
+
+class App : Application(), XposedServiceHelper.OnServiceListener {
+
+    override fun onCreate() {
+        super.onCreate()
+        ServiceLocator.init(this)
+        // 1.3.2（P1-4）：启动预热——模型（base+delta）与 Room 首连在 IO 线程提前加载，
+        // 冷启动后首条通知的处理不再被 ~10-15ms 模型加载尖峰占住实时槽
+        ServiceLocator.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { ServiceLocator.modelRepo.get() }
+        }
+        // LSPosed 框架服务（模块激活时由框架绑定）：模块激活状态 + delta 远程文件通道
+        runCatching { XposedServiceHelper.registerListener(this) }
+        // 模块拦截记录回流：system_server 在 APP 未运行时缓冲，启动即请求刷出
+        runCatching {
+            sendBroadcast(
+                android.content.Intent(cc.ytdttj.noticleaner.data.ModuleConfigCodec.ACTION_FLUSH_LOGS)
+                    .setPackage(packageName),
+            )
+        }
+        // 1.2.2：后台定期更新检查（6 小时，有网络约束），有新版本发通知提醒
+        runCatching { cc.ytdttj.noticleaner.update.UpdateWorker.schedule(this) }
+    }
+
+    override fun onServiceBind(service: XposedService) {
+        // Dev 7：转发到激活检测器（框架绑定=模块已启用；scope/请求作用域能力集中于此）
+        cc.ytdttj.noticleaner.keepalive.LspServiceDetector.onServiceBound(service)
+        ServiceLocator.onXposedServiceBound(service)
+    }
+
+    override fun onServiceDied(service: XposedService) {
+        cc.ytdttj.noticleaner.keepalive.LspServiceDetector.onServiceDied()
+        ServiceLocator.onXposedServiceDied()
+    }
+}
+
+/** 手写 ServiceLocator（Plan.md §2：小项目不引入 Hilt） */
+object ServiceLocator {
+    private val appJob = kotlinx.coroutines.SupervisorJob()
+    /** 应用级协程作用域（与进程同生命周期，供无 VM 场景使用） */
+    val appScope = kotlinx.coroutines.CoroutineScope(appJob + kotlinx.coroutines.Dispatchers.Default)
+
+    lateinit var db: AppDatabase
+        private set
+    lateinit var settings: SettingsRepository
+        private set
+    lateinit var modelRepo: ModelRepository
+        private set
+    lateinit var ruleEngine: RuleEngine
+        private set
+    lateinit var keepAlive: KeepAliveManager
+        private set
+    lateinit var moduleSync: ModuleConfigSync
+        private set
+
+    lateinit var appContext: android.content.Context
+        private set
+
+    fun modelDir(): String = "model" // delta 等学习文件相对 filesDir 的子目录
+
+    fun init(app: Application) {
+        appContext = app.applicationContext
+        // 1.4.0 Dev 12：环形日志最先初始化（后续任何组件的埋点即刻生效）
+        cc.ytdttj.noticleaner.diagnostics.RingLog.init(app)
+        db = AppDatabase.get(app)
+        settings = SettingsRepository(app)
+        modelRepo = ModelRepository(app)
+        ruleEngine = RuleEngine(db.ruleDao(), db.whitelistDao())
+        keepAlive = KeepAliveManager(app)
+        moduleSync = ModuleConfigSync(app, db.ruleDao(), db.whitelistDao())
+        moduleSync.start(appScope)
+        CleanerListenerService.initScope(app)
+        // Dev 9：岛代发通道必须在进程启动时就握手，不能等第一条通知。
+        // 此前 init() 只在 IslandNotifier.maybePost 里被调（lazy init），而 init 后
+        // 紧接着读 ready（READY 广播异步，必然还是 false）→ 每个进程生命周期的
+        // **第一条岛通知 100% 走回退路径**。这里提前到启动期，让 READY 在首条通知前就位。
+        runCatching {
+            cc.ytdttj.noticleaner.notify.island.IslandDispatch.init(app)
+        }
+        // 2.2.1 Dev 1：学习 schema 迁移。落盘的 spam_delta.bin 是**只增不改的历史产物**，
+        // 拟合语义一变（渠道桶护栏），旧 delta 里被灌歪的渠道桶不会自己消失 ——
+        // 必须主动重算一次，否则本次修复对「已经学过、但从此不再点学习」的用户等于没发布。
+        // 放在进程启动而非历史页：保证**从不打开界面的用户**也能被修好。
+        appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                if (modelRepo.needsRefit() &&
+                    db.notificationDao().listLearnedOnce().isNotEmpty()
+                ) {
+                    cc.ytdttj.noticleaner.data.LearningHelper.refit(db.notificationDao(), modelRepo)
+                    cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                        cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
+                        "学习 schema 迁移：按新护栏重拟合既有标注",
+                    )
+                }
+            }.onFailure {
+                cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+                    cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
+                    "✗ 学习 schema 迁移失败: $it（仍用旧 delta）",
+                )
+            }
+        }
+    }
+
+    /** LSPosed 框架服务绑定（模块激活）：注入同步器并补推 delta */
+    fun onXposedServiceBound(service: XposedService) {
+        moduleSync.xposedService = service
+        appScope.launch { moduleSync.onServiceBound() }
+    }
+
+    fun onXposedServiceDied() {
+        moduleSync.xposedService = null
+    }
+}

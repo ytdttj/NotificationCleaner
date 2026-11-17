@@ -1,0 +1,244 @@
+package cc.ytdttj.noticleaner.ai
+
+/**
+ * 特征哈希器 —— 与 training/train.py 中的 Python 参考实现逐位一致（唯一规范见 Plan.md §5.2）。
+ *
+ * 流程：
+ *  1. 归一化：全小写 → 删除空白字符、数字(Nd)、字母 'x'、标点与符号(P* 与 S* 类)
+ *  2. 按 Unicode codepoint 截断至 500（在原始文本上截断）
+ *  3. 对 UTF-16 代码单元取字符 n-gram（n = 1..3），跨词连续取
+ *  4. 每个 n-gram 的 UTF-16-LE 字节做 FNV-1a 32bit → index = hash & (BUCKETS-1)
+ *  5. 计数，整条文本特征向量做 L2 归一化
+ */
+object FeatureHasher {
+    const val BUCKETS = 1 shl 18
+    const val NGRAM_MIN = 1
+    const val NGRAM_MAX = 3
+    const val MAX_TEXT_LEN = 500
+
+    /** 与 Python SPACE_CHARS 一致的空白字符集（全部 BMP，转 Int 便于按码点比较） */
+    private val SPACE_CP: IntArray = intArrayOf(
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+        0x85, 0xA0, 0x1680,
+        0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
+        0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+    )
+
+    fun normalize(rawText: String): String {
+        val text = rawText.takeCodepoints(MAX_TEXT_LEN).lowercase()
+        val sb = StringBuilder(text.length)
+        // 按码点遍历（与 Python 逐 codepoint 语义一致：emoji 是 So 类会被删除，
+        // 若按 UTF-16 单元遍历，代理对会被误保留导致双端特征不一致）
+        for (cp in text.codePoints()) {
+            if (cp == 'x'.code) continue
+            if (SPACE_CP.contains(cp)) continue
+            when (Character.getType(cp)) {
+                Character.DECIMAL_DIGIT_NUMBER.toInt() -> continue
+                Character.CONNECTOR_PUNCTUATION.toInt(),
+                Character.DASH_PUNCTUATION.toInt(),
+                Character.START_PUNCTUATION.toInt(),
+                Character.END_PUNCTUATION.toInt(),
+                Character.INITIAL_QUOTE_PUNCTUATION.toInt(),
+                Character.FINAL_QUOTE_PUNCTUATION.toInt(),
+                Character.OTHER_PUNCTUATION.toInt(),
+                Character.MATH_SYMBOL.toInt(),
+                Character.CURRENCY_SYMBOL.toInt(),
+                Character.MODIFIER_SYMBOL.toInt(),
+                Character.OTHER_SYMBOL.toInt(),
+                -> continue
+            }
+            sb.appendCodePoint(cp)
+        }
+        return sb.toString()
+    }
+
+    /** 文本 → (index, count) 原始计数（未 L2 归一化）。含 '>' 伪特征（见 [hasGtMark]） */
+    fun counts(rawText: String): FeatureCounts =
+        countsOfNormalized(normalize(rawText), hasGtMark(rawText))
+
+    /**
+     * 已归一化文本 → (index, count) 原始计数（1.2.0，ImprovePlan P1-2）：
+     * 决策热路径先 normalize 做 hardAllow 检查，复用结果直接取 n-gram 计数，
+     * 消除 [counts] 内部的第二次 normalize。与 [counts] 对同一文本结果完全一致。
+     *
+     * 1.3.2（P2-6）微优化：
+     * - 开放寻址 IntArray 表替代 HashMap（每通知 ~700 次 Integer 装箱 + 节点分配 → 零装箱），
+     *   system_server 侧 GC 收益最大；
+     * - FNV 直接从 CharSequence 逐 char 喂入（低字节、高字节依次，与 UTF-16LE 字节序列
+     *   逐位等价），省去每通知 2×len 的字节数组分配；
+     * - 迭代顺序与 Python dict 插入序本就不同序（P2-6 论证），ParityTest 靠 1e-4 容差覆盖。
+     */
+    fun countsOfNormalized(normalizedText: String, hasGt: Boolean = false): FeatureCounts {
+        // P0-1：表容量必须严格大于 1~3-gram 的最大去重键数（≤ 3n-3，n 为 UTF-16 单元数）。
+        // 旧实现固定 2048：normalize 按 500 **码点**截断，astral 字母（U+1D400 系）每个占
+        // 2 单元 → n 可达 1000 → 去重键最多 ~2997 > 2048；开放寻址表满后 while(true)
+        // 找不到空槽会**永久自旋**（模块模式跑在 system_server → 一条通知即 DoS）。
+        // 按 n 动态取 2 的幂（> 3n-3 恒成立），数学上保证永不填满；典型文本（n≤600）
+        // 容量 ≤ 2048，与旧实现的分配开销相当。
+        val cap = nextPowerOfTwo(3 * normalizedText.length + 1).coerceAtLeast(16)
+        val slotMask = cap - 1
+        val kArr = IntArray(cap)
+        val vArr = IntArray(cap)
+        var size = 0
+        val mask = BUCKETS - 1
+        val n = normalizedText.length
+        for (len in NGRAM_MIN..NGRAM_MAX) {
+            val last = n - len
+            if (last < 0) continue
+            for (start in 0..last) {
+                val idx = fnv1a32Units(normalizedText, start, len) and mask
+                var slot = idx and slotMask
+                while (true) {
+                    val v = vArr[slot]
+                    if (v == 0) {
+                        kArr[slot] = idx
+                        vArr[slot] = 1
+                        size++
+                        break
+                    }
+                    if (kArr[slot] == idx) {
+                        vArr[slot] = v + 1
+                        break
+                    }
+                    slot = (slot + 1) and slotMask
+                }
+            }
+        }
+        // P1-8：'>' 伪特征注入（与 Python train.py 的 feature_buckets 对称）。
+        // 计 1 次、参与 L2 归一化，与文本 n-gram 同一待遇；若与某个 n-gram 哈希撞桶
+        // 则计数合并（Python dict 同语义，双端一致）。
+        if (hasGt) {
+            var slot = GT_KEY and slotMask
+            while (true) {
+                val v = vArr[slot]
+                if (v == 0) {
+                    kArr[slot] = GT_KEY
+                    vArr[slot] = 1
+                    size++
+                    break
+                }
+                if (kArr[slot] == GT_KEY) {
+                    vArr[slot] = v + 1
+                    break
+                }
+                slot = (slot + 1) and slotMask
+            }
+        }
+        return FeatureCounts(kArr, vArr, size)
+    }
+
+    /**
+     * 通道特征 key（1.1.11）：`ch:{pkg}/{channelId}` 哈希进同一桶空间。
+     * 前缀 "ch:" 避免与文本 n-gram 系统性碰撞（随机碰撞概率 2^-18，可忽略；
+     * 且 fit 与 score 对称计算，即使撞上 base 噪声桶 delta 也会自动补偿）。
+     */
+    fun channelKey(pkg: String, channelId: String): Int {
+        val units = "ch:$pkg/$channelId".toByteArray(Charsets.UTF_16LE)
+        return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
+    }
+
+    /**
+     * App 级先验桶（2.2.1 vc87）：按包名聚合，与渠道无关。
+     *
+     * 为什么需要它：mipush 的 channelId 按推送动态生成、营销方多渠道轮换
+     * （百度网盘实测 109478/102668/…），渠道粒度的学习桶与拦截都被绕过；
+     * 而纯文本学习对"伪装成个人生活"的营销有结构性平台期（学 8 条同模板也只到 p≈0.62）。
+     * 先验的正确粒度是**发件人** —— 同 App 的推送性质高度一致。
+     */
+    fun appKey(pkg: String): Int {
+        val units = "app:$pkg".toByteArray(Charsets.UTF_16LE)
+        return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
+    }
+
+    /**
+     * '>' 伪特征桶（P1-8）：normalize 删除所有符号（'>' 与全角 '＞' 均属 Sm 类），
+     * 文本 n-gram 永远看不到它们。用固定桶把「原始文本含 > 或 ＞」作为二元特征注入
+     * 计数表（与 Python train.py 的 `feat:gt` 完全同一哈希），base 训练给它小幅正权重，
+     * 端上「学为正常」可对同一桶拟合负修正 —— '>' 的强弱完全由语料与用户标注决定，
+     * 不再有绕过模型的硬性抬升（旧 `max(p, 0.95)` 已删除）。
+     */
+    const val GT_FEATURE_SEED = "feat:gt"
+    val GT_KEY: Int = fnv1a32(GT_FEATURE_SEED.toByteArray(Charsets.UTF_16LE), 0, GT_FEATURE_SEED.length * 2) and (BUCKETS - 1)
+
+    /** 原始文本是否含 '>' 或全角 '＞'（在 normalize 截断**之前**的完整原始文本上判断） */
+    fun hasGtMark(rawText: String): Boolean {
+        for (c in rawText) if (c == '>' || c == '＞') return true
+        return false
+    }
+
+    /** FNV-1a 32bit（与 Python 逐字节一致） */
+    private fun fnv1a32(data: ByteArray, offset: Int, len: Int): Int {
+        var h = 0x811C9DC5.toInt()
+        for (i in offset until offset + len) {
+            h = h xor (data[i].toInt() and 0xFF)
+            h *= 0x01000193
+        }
+        return h
+    }
+
+    /** 最小 ≥ v 的 2 的幂（v ≤ 0 返回 1） */
+    private fun nextPowerOfTwo(v: Int): Int {
+        var c = v - 1
+        c = c or (c shr 1)
+        c = c or (c shr 2)
+        c = c or (c shr 4)
+        c = c or (c shr 8)
+        c = c or (c shr 16)
+        return c + 1
+    }
+
+    /**
+     * FNV-1a 32bit over UTF-16LE 字节序列（P2-6）：逐 char 依次贡献低字节 `c & 0xFF`、
+     * 高字节 `(c >>> 8) & 0xFF`，与 `toByteArray(UTF_16LE)` 的字节序列逐位等价，零分配。
+     */
+    private fun fnv1a32Units(s: String, start: Int, unitCount: Int): Int {
+        var h = 0x811C9DC5.toInt()
+        for (i in start until start + unitCount) {
+            val c = s[i].code
+            h = h xor (c and 0xFF)
+            h *= 0x01000193
+            h = h xor ((c ushr 8) and 0xFF)
+            h *= 0x01000193
+        }
+        return h
+    }
+}
+
+/**
+ * 开放寻址 n-gram 计数表（1.3.2 P2-6）：values[i] == 0 表示空槽（计数从 1 起，非零即占用）。
+ * capacity = keys.size（2 的幂）；有效条目数 = [size]。
+ */
+class FeatureCounts(
+    val keys: IntArray,
+    val values: IntArray,
+    val size: Int,
+) {
+    /** 遍历所有 (key, count) 项 */
+    inline fun forEach(action: (key: Int, count: Int) -> Unit) {
+        for (i in keys.indices) {
+            val v = values[i]
+            if (v != 0) action(keys[i], v)
+        }
+    }
+
+    /** 诊断/测试用：转为普通 Map */
+    fun asMap(): Map<Int, Int> {
+        val m = HashMap<Int, Int>(size * 2)
+        forEach { k, c -> m[k] = c }
+        return m
+    }
+}
+
+/** Python `text[:500]` 的 codepoint 语义截断（Kotlin String 按 UTF-16 单元索引）。
+ *  1.3.2（P1-2）提升为公共：入库路径对 title/content 复用同一截断语义。 */
+fun String.takeCodepoints(n: Int): String {
+    if (n >= codePointCount(0, length)) return this
+    val sb = StringBuilder()
+    var count = 0
+    for (cp in codePoints()) {
+        if (count == n) break
+        sb.appendCodePoint(cp)
+        count++
+    }
+    return sb.toString()
+}

@@ -1,0 +1,55 @@
+# ==== Gradle 构建缓存与产物 ====
+.gradle/
+build/
+app/build/
+__pycache__/
+
+# ==== Kotlin 编译缓存 ====
+.kotlin/
+
+# ==== Android 本地配置（含 SDK 路径，因机器而异） ====
+local.properties
+captures/
+.cxx/
+
+# ==== 发布签名密钥（P1-6：keystore 与口令绝不入库，离线双备份） ====
+keystore.properties
+*.keystore
+*.jks
+
+# ==== IDE ====
+.idea/
+*.iml
+.vscode/
+
+# ==== 分发产物（APK 只放 Release 附件，不随源码提交） ====
+dist/
+/*.apk
+*.idsig
+
+# ==== 评估文档与参考仓库（仅本地） ====
+/miuixplan.md
+/island.md
+/islandplan.md
+/islandv2plan.md
+ref/
+
+# ==== 训练相关：整个目录仅本地，不上传（脚本、数据集、模型产物） ====
+training/
+
+# ==== 个人隐私数据（真实通知记录） ====
+通知滤盒_*.csv
+
+# ==== 系统与日志 ====
+*.log
+.DS_Store
+Thumbs.db
+
+# 开发计划
+*.md
+!README.md
+!CHANGELOG.md
+
+.trae/
+.workbuddy/
+NotiCleaner.png
