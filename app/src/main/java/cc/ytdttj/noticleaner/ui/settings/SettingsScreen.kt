@@ -247,7 +247,11 @@ class SettingsViewModel(
     }
 
     // ---- 历史通知（Dev 6：保留天数可调）----
-    val historyRetentionDays = settings.historyRetentionDays.stateIn(viewModelScope, SharingStarted.Eagerly, 7)
+    val historyRetentionDays = settings.historyRetentionDays.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        cc.ytdttj.noticleaner.data.HISTORY_RETENTION_DEFAULT_DAYS,
+    )
 
     fun setHistoryRetentionDays(v: Int) {
         viewModelScope.launch { settings.setHistoryRetentionDays(v) }
@@ -806,7 +810,8 @@ fun SettingsScreen(
                     Column(Modifier.weight(1f)) {
                         Text("导出诊断日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "导出 ZIP：每个模块一个 log 文件，各自覆盖导出前完整 24 小时",
+                            "导出 ZIP：每个模块一个 log 文件，各自覆盖导出前完整 24 小时；" +
+                                "通知历史 CSV 覆盖最近 30 天",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -866,7 +871,7 @@ fun SettingsScreen(
                         Column(Modifier.weight(1f)) {
                             Text("导出历史通知 CSV", style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "全部历史通知（应用/包名/通道/标题/正文/AI率/学习状态），经系统分享",
+                                "最近 30 天历史通知（应用/包名/通道/标题/正文/AI率/学习状态），经系统分享",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
@@ -909,15 +914,21 @@ fun SettingsScreen(
                     Column(Modifier.fillMaxWidth()) {
                         Text("历史保留天数：${retentionDraft} 天", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "未学习的历史通知只保留 N 天，最新通知不断把最老的顶掉（监控式循环保存）；已学习的标注不受影响",
+                            "未学习的历史通知只保留所选天数（1~365 天，默认 30 天），最新通知不断把最老的顶掉" +
+                                "（监控式循环保存）；已学习的标注不受影响",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         androidx.compose.material3.Slider(
                             value = retentionDraft.toFloat(),
-                            onValueChange = { retentionDraft = it.toInt().coerceIn(1, 30) },
+                            onValueChange = {
+                                retentionDraft = it.toInt().coerceIn(
+                                    cc.ytdttj.noticleaner.data.HISTORY_RETENTION_MIN_DAYS,
+                                    cc.ytdttj.noticleaner.data.HISTORY_RETENTION_MAX_DAYS,
+                                )
+                            },
                             onValueChangeFinished = { vm.setHistoryRetentionDays(retentionDraft) },
-                            valueRange = 1f..30f,
-                            steps = 28,
+                            valueRange = cc.ytdttj.noticleaner.data.HISTORY_RETENTION_MIN_DAYS.toFloat()..
+                                cc.ytdttj.noticleaner.data.HISTORY_RETENTION_MAX_DAYS.toFloat(),
                         )
                     }
                 }

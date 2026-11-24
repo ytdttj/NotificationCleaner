@@ -220,15 +220,35 @@ class HistoryViewModel(
      * 学习标注（写入标注集后全量重拟合）。学习为广告的同时清除通知栏中的该通知。
      * 1.1.11：允许对已学习通知重复学习——同方向重复点击累积 learnCount，
      * 拟合时按重复次数加权（大幅提升权重）；换方向则重置计数。
+     *
+     * 2.3.0 Dev 1：[focus] 为浮窗里勾选的学习重点（空串/null = 整条通知）。
+     * 只把所选部分交给模型拟合，避免记住整条唯一文案而无法泛化到同类推送。
+     * 方向改为「正常」时清空学习重点（正常样本始终按整条通知学习）。
      */
-    fun learn(n: NotificationEntity, label: Int) {
+    fun learn(
+        n: NotificationEntity,
+        label: Int,
+        focus: String? = null,
+        focusKind: String? = null,
+    ) {
         viewModelScope.launch(Dispatchers.Default) {
-            val sameDirection = n.learned && n.learnLabel == label
+            val kind = when {
+                label != 1 -> cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_AUTO
+                focusKind == cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT ->
+                    cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT
+                !focus.isNullOrBlank() -> cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_TEXT
+                else -> cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_AUTO
+            }
+            val learnFocus = if (label == 1) focus.orEmpty().trim() else ""
+            val sameDirection = n.learned && n.learnLabel == label &&
+                n.learnFocus == learnFocus && n.learnFocusKind == kind
             dao.update(
                 n.copy(
                     learned = true,
                     learnLabel = label,
                     learnCount = if (sameDirection) n.learnCount + 1 else 1,
+                    learnFocus = learnFocus,
+                    learnFocusKind = kind,
                     decision = if (label == 1) DECISION_MANUAL_MARKED_AD else DECISION_PASSED,
                 ),
             )
@@ -237,7 +257,13 @@ class HistoryViewModel(
             }
             val updated = refit()
             _selected.value = updated.firstOrNull { it.id == n.id }
-                ?: n.copy(learned = true, learnLabel = label, learnCount = if (sameDirection) n.learnCount + 1 else 1)
+                ?: n.copy(
+                    learned = true,
+                    learnLabel = label,
+                    learnCount = if (sameDirection) n.learnCount + 1 else 1,
+                    learnFocus = learnFocus,
+                    learnFocusKind = kind,
+                )
             // 2.0.1 Dev 11：学为"正常"时若该通知仍命中用户自定义规则，规则会继续拦截
             //（规则判定优先于 AI 打分）——不提示的话用户只会觉得"学了没用"
             val hitRule = if (label == 0) {
@@ -261,6 +287,10 @@ class HistoryViewModel(
             }
             _toast.value = when {
                 label == 1 && sameDirection -> "已重复学习（第 ${n.learnCount + 1} 次），权重已加强"
+                label == 1 && kind == cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT ->
+                    "已按模板「${cc.ytdttj.noticleaner.ai.FeatureHasher.structComboLabel(learnFocus)}」" +
+                        "学习为广告并清除"
+                label == 1 && learnFocus.isNotEmpty() -> "已按所选学习重点学习为广告并清除"
                 label == 1 -> "已学习为广告通知并清除"
                 hitRule != null ->
                     "已学习为正常通知；但该通知命中规则「${hitRule.appName}｜${hitRule.keyword.ifBlank { "条件规则" }}」，" +
@@ -276,9 +306,24 @@ class HistoryViewModel(
     /** 取消学习：从标注集移除后重新拟合，精确回滚 */
     fun unlearn(n: NotificationEntity) {
         viewModelScope.launch(Dispatchers.Default) {
-            dao.update(n.copy(learned = false, learnLabel = -1, learnCount = 0))
+            dao.update(
+                n.copy(
+                    learned = false,
+                    learnLabel = -1,
+                    learnCount = 0,
+                    learnFocus = "",
+                    learnFocusKind = cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_AUTO,
+                ),
+            )
             val updated = refit()
-            _selected.value = updated.firstOrNull { it.id == n.id } ?: n.copy(learned = false, learnLabel = -1, learnCount = 0)
+            _selected.value = updated.firstOrNull { it.id == n.id }
+                ?: n.copy(
+                    learned = false,
+                    learnLabel = -1,
+                    learnCount = 0,
+                    learnFocus = "",
+                    learnFocusKind = cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_AUTO,
+                )
             _toast.value = "已取消学习"
         }
     }

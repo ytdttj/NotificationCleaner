@@ -229,7 +229,8 @@ class ModuleLogProvider : ContentProvider() {
         const val COL_DECISION = "decision"
         const val COL_KEY = "key"
 
-        private const val EXPIRE_MS = 7L * 24 * 60 * 60 * 1000
+        /** 与默认保留天数一致；实际清理按设置的天数 + postTime 判定 */
+        private val EXPIRE_MS = cc.ytdttj.noticleaner.data.HISTORY_RETENTION_DEFAULT_DAYS * 24L * 60 * 60 * 1000
         private const val DEDUP_MS = 60_000L
     }
 }

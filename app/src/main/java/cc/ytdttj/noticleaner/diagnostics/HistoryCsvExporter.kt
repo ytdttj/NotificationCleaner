@@ -8,9 +8,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** 通知导出默认窗口：30 天（日志仍为 24 小时环形覆盖） */
+const val NOTIFICATION_EXPORT_DAYS = 30
+
 /**
  * 历史通知 CSV 导出（Dev 6）。
  *
+ * 默认导出最近 [NOTIFICATION_EXPORT_DAYS] 天的通知（而不是库里全部——保留期最长可到 365 天）。
  * 字段：应用名称、应用包名、通知通道、通知标题、通知正文、通知AI率、
  * 是否被手动学习、学习方向。
  * UTF-8 带 BOM（Excel 直接打开中文不乱码）；RFC 4180 转义（引号/逗号/换行）。
@@ -25,7 +29,8 @@ object HistoryCsvExporter {
     private val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
     suspend fun export(context: Context): File {
-        val rows = ServiceLocator.db.notificationDao().exportAll()
+        val since = System.currentTimeMillis() - NOTIFICATION_EXPORT_DAYS * 24L * 60 * 60 * 1000
+        val rows = ServiceLocator.db.notificationDao().listSince(since)
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val file = File(dir, "NotiCleaner-历史通知-$stamp.csv")

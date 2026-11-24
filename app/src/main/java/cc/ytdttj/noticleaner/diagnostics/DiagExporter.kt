@@ -26,7 +26,7 @@ import java.util.zip.ZipOutputStream
  * - 01..09：九个模块各自的 log（[LogModules]），**每个文件都只保留导出前完整 24 小时
  *   窗口内的条目**，并在文件头给出窗口、条目数、最早/最晚时间、逐时分布与覆盖状态
  *   （最早条目明显晚于窗口起点 → 标 ⚠ 部分覆盖并说明可能原因）
- * - 10：通知历史 CSV（最近 24 小时，数据库为准）
+ * - 10：通知历史 CSV（最近 30 天，数据库为准；日志仍只覆盖 24 小时）
  *
  * 24 小时覆盖由分模块环形日志（filesDir/logs/ring/<TAG>.log，保留 24h、崩溃/重启不丢）
  * 保证；logcat 缓冲通常不足 24 小时，只作为每个模块文件末尾的"补充段"附带。
@@ -35,8 +35,11 @@ import java.util.zip.ZipOutputStream
  */
 object DiagExporter {
 
-    /** 导出覆盖窗口：导出时刻往前 24 小时（例如 09-28 23:42 导出 → 09-27 23:42 ~ 09-28 23:42） */
+    /** 日志覆盖窗口：导出时刻往前 24 小时（环形日志上限，不随通知保留期变化） */
     private const val WINDOW_MS = 24L * 60 * 60 * 1000
+
+    /** 通知历史导出窗口：30 天（与日志窗口相互独立） */
+    private const val NOTIFICATION_WINDOW_MS = NOTIFICATION_EXPORT_DAYS * 24L * 60 * 60 * 1000
 
     /** 逐时分布槽位数 */
     private const val BUCKETS = 24
@@ -71,13 +74,13 @@ object DiagExporter {
             bodies[m] = buildModuleFile(m, now, windowStart, entries, extra)
             stats[m] = ModStat(m, entries.size, extra.size, entries.firstOrNull()?.ts, entries.lastOrNull()?.ts)
         }
-        val history = runCatching { recentNotificationsCsv(windowStart) }
+        val history = runCatching { recentNotificationsCsv(now - NOTIFICATION_WINDOW_MS) }
             .getOrDefault("(通知历史读取失败)\n")
 
         ZipOutputStream(out.outputStream().buffered()).use { zos ->
             zos.putText("00-诊断头与状态快照.txt", buildHeader(context, now, windowStart, stats, logcat))
             for (m in LogModules.ALL) zos.putText(LogModules.fileName(m), bodies[m].orEmpty())
-            zos.putText("10-通知历史-24h.csv", history)
+            zos.putText("10-通知历史-30d.csv", history)
         }
         out
     }
@@ -130,7 +133,7 @@ object DiagExporter {
             val s = stats[m]
             appendLine("${LogModules.fileName(m)} —— ${s?.summaryLine(windowStart) ?: "（无统计）"}")
         }
-        appendLine("10-通知历史-24h.csv —— 最近 24 小时通知历史（数据库记录）：时间/应用/包名/通道/标题/**正文**/决策/AI率/已学习")
+        appendLine("10-通知历史-30d.csv —— 最近 30 天通知历史（数据库记录）：时间/应用/包名/通道/标题/**正文**/决策/AI率/已学习")
         appendLine("      注：CSV 与 02/03 模块日志均含通知正文片段（便于排查误判与未上岛），")
         appendLine("      分享前请留意其中可能带有验证码、金额等敏感内容")
         appendLine()
@@ -342,7 +345,7 @@ object DiagExporter {
 
     // ---------------- 通知历史 ----------------
 
-    /** 最近 24 小时通知历史（CSV，可直接用表格软件打开） */
+    /** 最近 30 天通知历史（CSV，可直接用表格软件打开；窗口由调用方传入） */
     private suspend fun recentNotificationsCsv(windowStart: Long): String {
         val rows = cc.ytdttj.noticleaner.ServiceLocator.db.notificationDao().listSince(windowStart)
         // Dev 11：UTF-8 BOM——CSV 是纯 UTF-8，Excel/WPS 在中文 Windows 上按 GBK 打开即乱码
@@ -350,7 +353,7 @@ object DiagExporter {
         // Dev 12：补「通知正文」+「通知通道」——只有标题时无法判断"这条为什么被判广告/
         // 为什么没上岛"（判断依据是 title+content 合流后的文本，通道还会带来偏置权重）
         val header = "时间,应用,包名,通知通道,通知标题,通知正文,决策,AI率,已学习"
-        if (rows.isEmpty()) return "\ufeff$header\r\n（最近 24 小时无通知记录）\r\n"
+        if (rows.isEmpty()) return "\ufeff$header\r\n（最近 30 天无通知记录）\r\n"
         return buildString {
             append("\ufeff")
             append(header).append("\r\n")

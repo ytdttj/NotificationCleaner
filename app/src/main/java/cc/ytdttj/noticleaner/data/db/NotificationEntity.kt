@@ -21,6 +21,16 @@ const val DECISION_MEDIA = "MEDIA" // 媒体通知（音乐/视频播放控件�
 const val DECISION_CONVERSATION = "CONVERSATION" // 对话通知（MessagingStyle 等）
 const val DECISION_ONGOING = "ONGOING" // 常驻通知（进度条、来电）
 
+/**
+ * 学习重点类型（2.3.0 Dev 1）：
+ * - [LEARN_FOCUS_AUTO]：空串，旧数据/学整条通知
+ * - [LEARN_FOCUS_TEXT]：学用户勾选/编辑的文本片段（`learnFocus` 存原文）
+ * - [LEARN_FOCUS_STRUCT]：学结构模板（`learnFocus` 存 `at+detail_gt` 这类标记串）
+ */
+const val LEARN_FOCUS_AUTO = ""
+const val LEARN_FOCUS_TEXT = "TEXT"
+const val LEARN_FOCUS_STRUCT = "STRUCT"
+
 /** 拦截类决策全集（NLS 端 + 模块端，1.2.1）：历史"已过滤"筛选与统计计数使用 */
 val FILTERED_DECISIONS = setOf(
     DECISION_FILTERED_BY_AI,
@@ -48,7 +58,8 @@ fun countBucketOf(decision: String): Boolean? = when (decision) {
 
 /**
  * 通知历史（Plan.md §4）。
- * expireAt = postTime + 7 天；learned=true 的通知永久保留（查询时忽略 expireAt）。
+ * expireAt = postTime + 默认保留天数（30 天，仅作展示/兼容）；
+ * 实际清理按用户在设置里选的天数（1~365）+ postTime 判定，learned=true 的通知永久保留。
  *
  * 索引（ImprovePlan P0-1）：决策热路径每条通知必查 findByKey / findRecentDuplicate，
  * 且 purgeExpired / listLearnedOnce 按条件过滤——无索引时全部全表扫描。
@@ -78,6 +89,20 @@ data class NotificationEntity(
     val learned: Boolean = false,
     val learnLabel: Int = -1, // 学习方向：1=广告 0=正常 -1=未学习
     val learnCount: Int = 0, // 同一通知被重复学习的次数（1.1.11：重复学习加权）
+    /**
+     * 学习重点（2.3.0 Dev 1）：用户在选择浮窗里勾选的标题/正文关键字，空串 = 学习整条通知。
+     *
+     * 为什么需要：学习样本是**文本级 n-gram**，把整条唯一文案（如微博某条 @ 的具体内容）
+     * 当作样本只会记住这一条，对下一批换了措辞的同类推送毫无泛化能力。
+     * 只学"多条推送里重复出现的那部分"（固定标题、固定后缀/关键词）才能命中同类。
+     */
+    @androidx.room.ColumnInfo(defaultValue = "''") val learnFocus: String = "",
+    /**
+     * 学习重点类型（2.3.0 Dev 1）：空串 = 旧数据/整条，TEXT = 文本片段，STRUCT = 结构模板。
+     * `STRUCT` 时 [learnFocus] 存 `at+detail_gt` 这类规范 id，由
+     * [cc.ytdttj.noticleaner.ai.FeatureHasher.structMarksOfId] 还原。
+     */
+    @androidx.room.ColumnInfo(defaultValue = "''") val learnFocusKind: String = LEARN_FOCUS_AUTO,
     val expireAt: Long,
     val key: String = "", // 通知系统 sbn.key，撤销过滤时重新展示用不到，仅留档
     // 1.3.2（P2-2）：title+'\u0000'+content 的 64 位哈希（[contentHashOf]），60s 去重比较用。

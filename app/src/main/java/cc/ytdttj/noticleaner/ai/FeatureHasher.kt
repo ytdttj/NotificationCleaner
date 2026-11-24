@@ -9,6 +9,10 @@ package cc.ytdttj.noticleaner.ai
  *  3. 对 UTF-16 代码单元取字符 n-gram（n = 1..3），跨词连续取
  *  4. 每个 n-gram 的 UTF-16-LE 字节做 FNV-1a 32bit → index = hash & (BUCKETS-1)
  *  5. 计数，整条文本特征向量做 L2 归一化
+ *
+ * 2.3.0 Dev 1：归一化**不再**保留符号（见 §2.5 语料实测），`@`/`详情>>`/链接等
+ * 结构信号改由 [structKeysForText] 以 prior 型特征单独表达（x=1、不参与 L2、
+ * base 权重为 0、只由用户标注学习）。旧 `feat:gt` 全局伪特征已退役。
  */
 object FeatureHasher {
     const val BUCKETS = 1 shl 18
@@ -52,9 +56,8 @@ object FeatureHasher {
         return sb.toString()
     }
 
-    /** 文本 → (index, count) 原始计数（未 L2 归一化）。含 '>' 伪特征（见 [hasGtMark]） */
-    fun counts(rawText: String): FeatureCounts =
-        countsOfNormalized(normalize(rawText), hasGtMark(rawText))
+    /** 文本 → (index, count) 原始计数（未 L2 归一化）。 */
+    fun counts(rawText: String): FeatureCounts = countsOfNormalized(normalize(rawText))
 
     /**
      * 已归一化文本 → (index, count) 原始计数（1.2.0，ImprovePlan P1-2）：
@@ -68,7 +71,7 @@ object FeatureHasher {
      *   逐位等价），省去每通知 2×len 的字节数组分配；
      * - 迭代顺序与 Python dict 插入序本就不同序（P2-6 论证），ParityTest 靠 1e-4 容差覆盖。
      */
-    fun countsOfNormalized(normalizedText: String, hasGt: Boolean = false): FeatureCounts {
+    fun countsOfNormalized(normalizedText: String): FeatureCounts {
         // P0-1：表容量必须严格大于 1~3-gram 的最大去重键数（≤ 3n-3，n 为 UTF-16 单元数）。
         // 旧实现固定 2048：normalize 按 500 **码点**截断，astral 字母（U+1D400 系）每个占
         // 2 单元 → n 可达 1000 → 去重键最多 ~2997 > 2048；开放寻址表满后 while(true)
@@ -104,26 +107,6 @@ object FeatureHasher {
                 }
             }
         }
-        // P1-8：'>' 伪特征注入（与 Python train.py 的 feature_buckets 对称）。
-        // 计 1 次、参与 L2 归一化，与文本 n-gram 同一待遇；若与某个 n-gram 哈希撞桶
-        // 则计数合并（Python dict 同语义，双端一致）。
-        if (hasGt) {
-            var slot = GT_KEY and slotMask
-            while (true) {
-                val v = vArr[slot]
-                if (v == 0) {
-                    kArr[slot] = GT_KEY
-                    vArr[slot] = 1
-                    size++
-                    break
-                }
-                if (kArr[slot] == GT_KEY) {
-                    vArr[slot] = v + 1
-                    break
-                }
-                slot = (slot + 1) and slotMask
-            }
-        }
         return FeatureCounts(kArr, vArr, size)
     }
 
@@ -150,20 +133,134 @@ object FeatureHasher {
         return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
     }
 
-    /**
-     * '>' 伪特征桶（P1-8）：normalize 删除所有符号（'>' 与全角 '＞' 均属 Sm 类），
-     * 文本 n-gram 永远看不到它们。用固定桶把「原始文本含 > 或 ＞」作为二元特征注入
-     * 计数表（与 Python train.py 的 `feat:gt` 完全同一哈希），base 训练给它小幅正权重，
-     * 端上「学为正常」可对同一桶拟合负修正 —— '>' 的强弱完全由语料与用户标注决定，
-     * 不再有绕过模型的硬性抬升（旧 `max(p, 0.95)` 已删除）。
-     */
-    const val GT_FEATURE_SEED = "feat:gt"
-    val GT_KEY: Int = fnv1a32(GT_FEATURE_SEED.toByteArray(Charsets.UTF_16LE), 0, GT_FEATURE_SEED.length * 2) and (BUCKETS - 1)
+    // ==================== 2.3.0 Dev 1：结构特征（prior 型） ====================
 
-    /** 原始文本是否含 '>' 或全角 '＞'（在 normalize 截断**之前**的完整原始文本上判断） */
-    fun hasGtMark(rawText: String): Boolean {
-        for (c in rawText) if (c == '>' || c == '＞') return true
-        return false
+    const val STRUCT_AT = "at"
+    const val STRUCT_DETAIL_GT = "detail_gt"
+    const val STRUCT_LINK = "link"
+    const val STRUCT_SHARE = "share"
+
+    /** 结构标记的规范顺序（组合 id 与哈希都依赖它，保证双端/跨版本稳定） */
+    private val STRUCT_ORDER = listOf(STRUCT_AT, STRUCT_DETAIL_GT, STRUCT_LINK, STRUCT_SHARE)
+
+    /**
+     * 从**原始文本**提取结构标记（不经过 normalize——符号正是在那一步被删除的）。
+     *
+     * 为什么需要独立通道：`@`、`详情>>` 是用户眼中最强的判别信号，但归一化必须删除
+     * 全部标点符号（语料两侧预处理不对称，保留会学成「标点=广告」）。结构标记以
+     * prior 型特征（x=1、不参与 L2、base 权重 0）进入模型，只由用户标注拟合。
+     */
+    fun structMarksOf(rawText: String): List<String> {
+        val out = ArrayList<String>(4)
+        if (rawText.indexOf('@') >= 0 || rawText.indexOf('＠') >= 0) out.add(STRUCT_AT)
+        if (hasDetailGt(rawText)) out.add(STRUCT_DETAIL_GT)
+        if (rawText.contains("网页链接") || rawText.contains("链接") ||
+            rawText.indexOf("http", ignoreCase = true) >= 0
+        ) {
+            out.add(STRUCT_LINK)
+        }
+        if (rawText.contains("[分享") || rawText.contains("【分享")) out.add(STRUCT_SHARE)
+        return out
+    }
+
+    /** `详情[空白]{1,2}`（`详情>>`、`详情>`、`详情 >`、全角 ＞ 均命中） */
+    private fun hasDetailGt(text: String): Boolean {
+        var from = 0
+        while (true) {
+            val i = text.indexOf("详情", from)
+            if (i < 0) return false
+            var j = i + 2
+            while (j < text.length && text[j].isWhitespace()) j++
+            if (j < text.length && (text[j] == '>' || text[j] == '＞')) return true
+            from = i + 1
+        }
+    }
+
+    /** 单标记桶：`struct:{mark}/{pkg}`（按 App 隔离，避免微博的 @ 影响微信） */
+    fun structKey(pkg: String, mark: String): Int {
+        val units = "struct:$mark/$pkg".toByteArray(Charsets.UTF_16LE)
+        return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
+    }
+
+    /** 精确组合桶：`struct:combo:{markA}+{markB}/{pkg}`（排序固定，顺序无关） */
+    fun structComboKey(pkg: String, marks: Collection<String>): Int {
+        val canonical = STRUCT_ORDER.filter { it in marks }
+        val units = "struct:combo/${canonical.joinToString("+")}/$pkg".toByteArray(Charsets.UTF_16LE)
+        return fnv1a32(units, 0, units.size) and (BUCKETS - 1)
+    }
+
+    /**
+     * 「首选组合」：`@` 与 `详情>>` 同时存在时优先用这一对（最常见的营销模板）；
+     * 否则退回全部命中标记。UI 推荐与历史回填共用同一规则，避免「多一个 链接 标记
+     * 就学成三段组合、下一批少一个标记又失配」。
+     */
+    fun preferredStructCombo(marks: Collection<String>): List<String> {
+        return if (STRUCT_AT in marks && STRUCT_DETAIL_GT in marks) {
+            listOf(STRUCT_AT, STRUCT_DETAIL_GT)
+        } else {
+            STRUCT_ORDER.filter { it in marks }
+        }
+    }
+
+    /** 结构组合的持久化 id（如 `at+detail_gt`），用于 `learnFocusKind=STRUCT` 的存档 */
+    fun structComboId(marks: Collection<String>): String =
+        STRUCT_ORDER.filter { it in marks }.joinToString("+")
+
+    /** 从持久化 id 还原标记集合（未知/空 id 返回空列表） */
+    fun structMarksOfId(id: String): List<String> {
+        val parts = id.split("+").map { it.trim() }.filter { it.isNotEmpty() }
+        return STRUCT_ORDER.filter { it in parts }
+    }
+
+    /** 结构组合 id 的展示名（`at+detail_gt` → `@ + 详情>>`），toast 与详情页共用 */
+    fun structComboLabel(id: String): String {
+        val names = structMarksOfId(id).map {
+            when (it) {
+                STRUCT_AT -> "@"
+                STRUCT_DETAIL_GT -> "详情>>"
+                STRUCT_LINK -> "网页链接"
+                STRUCT_SHARE -> "[分享]"
+                else -> it
+            }
+        }
+        return if (names.isEmpty()) id else names.joinToString(" + ")
+    }
+
+    /**
+     * 正文命中的全部结构桶：每个单标记 + 所有 size ≥ 2 的子集组合。
+     *
+     * 例如文本同时含 `@` 与 `详情>>` 时，返回 `at`、`detail_gt`、`combo:at+detail_gt`；
+     * 学过的组合对「多一个标记」的文本仍然生效（子集命中）。
+     */
+    fun structKeysForText(rawText: String, pkg: String): List<Int> {
+        val marks = structMarksOf(rawText)
+        if (marks.isEmpty()) return emptyList()
+        val out = ArrayList<Int>(marks.size + 8)
+        for (m in marks) out.add(structKey(pkg, m))
+        val n = marks.size
+        if (n >= 2) {
+            for (mask in 1 until (1 shl n)) {
+                if (Integer.bitCount(mask) < 2) continue
+                val subset = ArrayList<String>(Integer.bitCount(mask))
+                for (i in 0 until n) if (mask and (1 shl i) != 0) subset.add(marks[i])
+                out.add(structComboKey(pkg, subset))
+            }
+        }
+        return out
+    }
+
+    /**
+     * 用户显式选择的结构标记对应的学习桶：
+     * - 选多个标记 → **只**给精确组合桶（单标记保持 0，避免「只有 @」的真人消息被误伤）；
+     * - 只选一个标记 → 给该单标记桶（UI 必须警告作用范围）。
+     */
+    fun structKeysForMarks(pkg: String, marks: Collection<String>): List<Int> {
+        val canonical = STRUCT_ORDER.filter { it in marks }
+        return when {
+            canonical.isEmpty() -> emptyList()
+            canonical.size == 1 -> listOf(structKey(pkg, canonical[0]))
+            else -> listOf(structComboKey(pkg, canonical))
+        }
     }
 
     /** FNV-1a 32bit（与 Python 逐字节一致） */

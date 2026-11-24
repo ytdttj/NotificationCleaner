@@ -78,7 +78,10 @@ class CleanerListenerService : NotificationListenerService() {
 
         /** 硬放行词表与强广告抬升常量迁移至 [FilterGuards]（1.2.1：NLS 与模块端共用） */
 
-        private val EXPIRE_MS = TimeUnit.DAYS.toMillis(7)
+        /** 入库行的展示用过期时间：与默认保留天数一致；实际清理按设置的天数 + postTime 判定 */
+        private val EXPIRE_MS = TimeUnit.DAYS.toMillis(
+            cc.ytdttj.noticleaner.data.HISTORY_RETENTION_DEFAULT_DAYS.toLong(),
+        )
         private val DEDUP_WINDOW_MS = TimeUnit.SECONDS.toMillis(60)
 
         // ---- 决策热路径缓存（1.0.7：消除每条通知的 DataStore/PackageManager 往返，降低拦截延迟） ----
@@ -397,15 +400,17 @@ class CleanerListenerService : NotificationListenerService() {
                             } else {
                                 null
                             }
-                            // P1-8：删除 '>' 强抬（max(p, 0.95)）——它绕过模型且无法被学习推翻
-                            //（每条通知都带 '>' 的 App 学 100 次"正常"也仍被拦）。'>' 语义现由
-                            // 模型内的伪特征桶承载（FeatureHasher.GT_KEY，训练语料学出小幅
-                            // 广告权重），用户"学为正常"可对同一桶拟合负修正，翻案成为可能。
+                            // 2.3.0 Dev 1：结构特征（prior 型）——归一化必须删除 `@`/`>>`
+                            //（语料两侧预处理不对称，保留会学成「标点=广告」），
+                            // 因此从**原始文本**提取结构标记，按 App 隔离、不参与 L2、
+                            // base 权重为 0、只由用户标注学习。旧 `feat:gt` 伪特征已退役。
+                            val structKeys = cc.ytdttj.noticleaner.ai.FeatureHasher
+                                .structKeysForText(joined, pkg)
                             val p = modelRepo.scoreCached(
                                 pkg,
                                 normalized,
                                 chKey,
-                                hasGt = cc.ytdttj.noticleaner.ai.FeatureHasher.hasGtMark(joined),
+                                structKeys,
                             ) ?: 0.0
                             probability = p.toFloat()
                             if (p >= cachedThreshold && cachedIntercept) {

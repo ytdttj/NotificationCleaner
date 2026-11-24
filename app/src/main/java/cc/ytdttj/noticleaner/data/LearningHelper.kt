@@ -93,8 +93,8 @@ object LearningHelper {
      * 且后续的重复拟合读到的是最新标注（结果收敛一致）。
      */
     private suspend fun refitLocked(dao: NotificationDao, modelRepo: ModelRepository): List<NotificationEntity> {
-        val labels = dao.listLearnedOnce()
-        if (labels.isEmpty()) {
+        val initial = dao.listLearnedOnce()
+        if (initial.isEmpty()) {
             // P0-3：空标注不能只写 schema 就返回——applyDelta 是唯一写 delta 的入口，
             // 跳过它意味着"取消最后一条标注"后旧学习量仍留在内存与 spam_delta.bin 里，
             // 模型持续被已撤销的标注带偏（README 承诺"取消标注可精确回滚"）。
@@ -110,17 +110,54 @@ object LearningHelper {
             modelRepo.setLearningSchema(ModelRepository.LEARNING_SCHEMA)
             return emptyList()
         }
-        val samples = labels.map {
+        // 2.3.0 Dev 1：学习内容迁移。schema 4 → 5 时，把旧版「学整条通知」的标注
+        // 自动改写成新方式的「学模板」——含 `@ + 详情>>` 等结构组合的旧标注会直接
+        // 转成 STRUCT 学习重点并落库，用户不需要重新点一遍。
+        val labels = if (modelRepo.learningSchema() < ModelRepository.LEARNING_SCHEMA) {
+            migrateLearnedFocus(dao, initial)
+        } else {
+            initial
+        }
+        // 结构组合的双向统计（按整条文本）：用于「混杂组合不建先验」的动态护栏，
+        // 也用于未显式选模板的旧标注自动回填（同组合 ≥2 条独立标注才回填）。
+        val combos = comboStats(labels)
+        val samples = labels.map { n ->
+            val isAd = n.learnLabel == 1
+            val structFocus = n.learnFocusKind == cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT
+            val explicitKey = if (structFocus) ComboKey(n.packageName, n.learnFocus) else null
+            val wholeKey = comboKeyOf(n)
+            val wholeCount = wholeKey?.let { (combos[it]?.get(0) ?: 0) + (combos[it]?.get(1) ?: 0) } ?: 0
+            val useKey = when {
+                // 显式模板：只要当前不是双向混杂就生效（混杂时退回整条文本）
+                explicitKey != null && oneSided(combos, explicitKey, isAd) -> explicitKey
+                // 旧标注自动回填：同组合 ≥2 条独立标注且方向一致
+                wholeKey != null && wholeCount >= COMBO_BACKFILL_MIN_SAMPLES &&
+                    oneSided(combos, wholeKey, isAd) -> wholeKey
+                else -> null
+            }
             SpamTuner.Sample(
-                text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n"),
-                spam = it.learnLabel == 1,
-                channelKey = if (it.channelId.isNotEmpty()) {
-                    FeatureHasher.channelKey(it.packageName, it.channelId)
+                // 2.3.0 Dev 1：优先只学用户勾选的「学习重点」，空串回退整条通知。
+                // 背景：整条唯一文案只会记住这一条（比如微博某条 @ 的具体内容），
+                // 下一批换措辞的同类推送拿不到任何泛化；只学重复出现的标题/关键词才有效。
+                // STRUCT 样本不携带文本 n-gram——只学结构组合，避免把整条唯一文案一起记进去。
+                text = when {
+                    structFocus && useKey != null -> ""
+                    // 模板当前双向混杂：退回整条文本，绝不能把 `at+detail_gt` 当文本学
+                    structFocus -> wholeText(n)
+                    n.learnFocus.isNotBlank() -> n.learnFocus
+                    else -> wholeText(n)
+                },
+                spam = isAd,
+                channelKey = if (n.channelId.isNotEmpty()) {
+                    FeatureHasher.channelKey(n.packageName, n.channelId)
                 } else {
                     0
                 },
-                appKey = FeatureHasher.appKey(it.packageName),
-                weight = maxOf(1, it.learnCount),
+                appKey = FeatureHasher.appKey(n.packageName),
+                weight = maxOf(1, n.learnCount),
+                structKeys = useKey?.let {
+                    FeatureHasher.structKeysForMarks(it.pkg, FeatureHasher.structMarksOfId(it.combo))
+                } ?: emptyList(),
             )
         }
         val base = modelRepo.baseModel() ?: return labels
@@ -137,23 +174,127 @@ object LearningHelper {
         // 2.2.1 Dev 1：记录本次拟合所用的学习 schema，避免老 delta 被反复认为"需要迁移"
         modelRepo.setLearningSchema(ModelRepository.LEARNING_SCHEMA)
 
-        // 用新模型刷新已学习行的概率展示
+        // 用新模型刷新已学习行的概率展示。
+        // 注意：这里刻意用**整条通知**打分（而非 learnFocus）——该行展示的是
+        // 「这条通知在生效模型下的真实广告概率」，只学关键词不代表整条文本就该高分。
         val effective = modelRepo.get() ?: return labels
         val updated = ServiceLocator.db.withTransaction {
             labels.map {
-                val text = listOf(it.title, it.content).filter { s -> s.isNotEmpty() }.joinToString("\n")
+                val text = wholeText(it)
                 val chKey = if (it.channelId.isNotEmpty()) {
                     FeatureHasher.channelKey(it.packageName, it.channelId)
                 } else {
                     null
                 }
-                val p = effective.score(text, FeatureHasher.appKey(it.packageName), chKey).toFloat()
+                // 2.3.0 Dev 1：回算必须带上结构桶，否则「学过的模板」在历史页看不到效果
+                val structKeys = FeatureHasher.structKeysForText(text, it.packageName)
+                val p = effective.score(
+                    text,
+                    FeatureHasher.appKey(it.packageName),
+                    chKey,
+                    structKeys,
+                ).toFloat()
                 val row = it.copy(adProbability = p)
                 dao.update(row)
                 row
             }
         }
         return updated
+    }
+
+    /** 整条通知文本（title + content），学习/打分/回算共用同一拼接口径 */
+    private fun wholeText(n: NotificationEntity): String =
+        listOf(n.title, n.content).filter { s -> s.isNotEmpty() }.joinToString("\n")
+
+    /** 历史组合回填所需的最少独立标注条数（按通知条数，不按 learnCount） */
+    private const val COMBO_BACKFILL_MIN_SAMPLES = 2
+
+    /** 结构组合的标识：App + 规范组合 id（如 `com.sina.weibo` + `at+detail_gt`） */
+    private data class ComboKey(val pkg: String, val combo: String)
+
+    /**
+     * 某条通知**整条文本**命中的首选结构组合（`@ + 详情>>` 优先），
+     * 少于 2 个标记时返回 null（单标记永不参与自动迁移/回填）。
+     */
+    private fun comboKeyOf(n: NotificationEntity): ComboKey? {
+        val marks = FeatureHasher.structMarksOf(wholeText(n))
+        if (marks.size < 2) return null
+        val combo = FeatureHasher.preferredStructCombo(marks)
+        if (combo.size < 2) return null
+        return ComboKey(n.packageName, FeatureHasher.structComboId(combo))
+    }
+
+    /** 结构组合的双向标注统计：[0]=广告条数，[1]=正常条数（按通知条数，不按 learnCount） */
+    private fun comboStats(labels: List<NotificationEntity>): Map<ComboKey, IntArray> {
+        val out = HashMap<ComboKey, IntArray>()
+        for (n in labels) {
+            val key = comboKeyOf(n) ?: continue
+            val arr = out.getOrPut(key) { IntArray(2) }
+            if (n.learnLabel == 1) arr[0]++ else arr[1]++
+        }
+        return out
+    }
+
+    /** 组合是否方向一致（该方向 ≥1 条、另一方向 0 条）——两侧都有标注视为混杂，不建先验 */
+    private fun oneSided(stats: Map<ComboKey, IntArray>, key: ComboKey, isAd: Boolean): Boolean {
+        val arr = stats[key] ?: return false
+        return if (isAd) arr[1] == 0 else arr[0] == 0
+    }
+
+    /** 迁移计划：某条旧标注应改成的新学习重点（kind + focus） */
+    internal data class FocusPlan(val kind: String, val focus: String)
+
+    /**
+     * 纯决策：为一批旧标注计算迁移计划（不写库，便于单测覆盖）。
+     *
+     * - 整条文本命中 ≥2 个结构标记（如 `@` + `详情>>`）且该组合方向一致 → STRUCT；
+     * - 已有文本重点（2.3.0 Dev 1 用户选择）→ 保留选择，补记 TEXT；
+     * - 无结构模板的标注 → 不迁移（维持整条文本学习），因为没有可安全自动提取的模板。
+     */
+    internal fun planFocusMigration(labels: List<NotificationEntity>): Map<Long, FocusPlan> {
+        val stats = comboStats(labels)
+        val out = LinkedHashMap<Long, FocusPlan>()
+        for (n in labels) {
+            if (n.learnFocusKind == cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT) continue
+            val key = comboKeyOf(n)
+            val plan = when {
+                n.learnFocus.isNotBlank() ->
+                    FocusPlan(cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_TEXT, n.learnFocus)
+                key != null && oneSided(stats, key, n.learnLabel == 1) ->
+                    FocusPlan(cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT, key.combo)
+                else -> continue
+            }
+            if (plan.kind != n.learnFocusKind || plan.focus != n.learnFocus) {
+                out[n.id] = plan
+            }
+        }
+        return out
+    }
+
+    /**
+     * 学习内容迁移（2.3.0 Dev 1，schema 4 → 5 时执行一次）：
+     * 按 [planFocusMigration] 把旧标注改写为新方式并落库。历史详情会显示
+     * 「学习重点：模板 @ + 详情>>」，用户不需要重新点一遍；[learnCount] 原样保留。
+     */
+    private suspend fun migrateLearnedFocus(
+        dao: NotificationDao,
+        labels: List<NotificationEntity>,
+    ): List<NotificationEntity> {
+        val plan = planFocusMigration(labels)
+        if (plan.isEmpty()) return labels
+        val updates = labels.mapNotNull { n ->
+            plan[n.id]?.let { n.copy(learnFocus = it.focus, learnFocusKind = it.kind) }
+        }
+        ServiceLocator.db.withTransaction {
+            for (u in updates) dao.update(u)
+        }
+        cc.ytdttj.noticleaner.diagnostics.RingLog.log(
+            cc.ytdttj.noticleaner.diagnostics.LogModules.MODEL,
+            "学习迁移：${updates.size}/${labels.size} 条旧标注按新方式重新标注" +
+                "（模板 ${updates.count { it.learnFocusKind == cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT }} 条）",
+        )
+        val byId = updates.associateBy { it.id }
+        return labels.map { byId[it.id] ?: it }
     }
 
     /**

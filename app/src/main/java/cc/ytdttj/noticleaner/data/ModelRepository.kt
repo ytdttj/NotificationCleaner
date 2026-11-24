@@ -84,13 +84,18 @@ class ModelRepository(private val context: Context) {
         pkg: String,
         normalizedText: String,
         channelKey: Int?,
-        hasGt: Boolean = false,
+        structKeys: List<Int> = emptyList(),
     ): Double? {
         val model = get() ?: return null
-        val key = cacheKey(pkg, normalizedText, channelKey, hasGt)
+        val key = cacheKey(pkg, normalizedText, channelKey, structKeys)
         synchronized(scoreCache) { scoreCache[key] }?.let { return it }
         // vc87：App 先验桶由 pkg 唯一决定（缓存键已含 pkg，键无需变化）
-        val p = model.scoreNormalized(normalizedText, cc.ytdttj.noticleaner.ai.FeatureHasher.appKey(pkg), channelKey, hasGt)
+        val p = model.scoreNormalized(
+            normalizedText,
+            cc.ytdttj.noticleaner.ai.FeatureHasher.appKey(pkg),
+            channelKey,
+            structKeys,
+        )
         synchronized(scoreCache) { scoreCache[key] = p }
         return p
     }
@@ -100,7 +105,12 @@ class ModelRepository(private val context: Context) {
      * pkg/channelKey 必须与文本一起进哈希，否则不同 App/渠道的同文本通知互相命中
      * （渠道偏置判错）。碰撞概率 ~2^-64 可忽略，属正确性取舍（代码级取舍已在此注明）。
      */
-    private fun cacheKey(pkg: String, normalizedText: String, channelKey: Int?, hasGt: Boolean): Long {
+    private fun cacheKey(
+        pkg: String,
+        normalizedText: String,
+        channelKey: Int?,
+        structKeys: List<Int>,
+    ): Long {
         var h = modelEpoch xor -3750763034362895579L // FNV-1a 64 offset basis
         val prime = 0x100000001B3L
         for (c in pkg) {
@@ -117,8 +127,12 @@ class ModelRepository(private val context: Context) {
         h *= prime
         h = h xor (channelKey ?: 0).toLong()
         h *= prime
-        // P1-8：'>' 伪特征开关必须进缓存键，否则同文本"含>/不含>"两种打分互相污染
-        h = h xor if (hasGt) 1L else 0L
+        // 2.3.0 Dev 1：结构桶必须进缓存键——归一化会删掉 `@`/`>>`，
+        // 「@x详情>>」与「x详情」归一化后可能相同，但结构桶完全不同
+        for (k in structKeys) {
+            h = h xor k.toLong()
+            h *= prime
+        }
         return h
     }
 
@@ -292,7 +306,8 @@ class ModelRepository(private val context: Context) {
          * - 2：2.2.1 Dev 1 渠道桶护栏（混杂渠道不建桶 + 幅值封顶 + 重复学习不放大渠道桶）
          * - 3：2.2.1 vc86 纯渠道解除封顶（同侧 ≥3 条标注的渠道放宽到 ±8）
          * - 4：2.2.1 vc87 App 级先验桶（纯 App 桶接管渠道桶，三态互斥）
+         * - 5：2.3.0 Dev 1 结构桶（prior 型）+ 结构样本绕过 MIN_LENGTH + `feat:gt` 退役
          */
-        const val LEARNING_SCHEMA = 4
+        const val LEARNING_SCHEMA = 5
     }
 }
