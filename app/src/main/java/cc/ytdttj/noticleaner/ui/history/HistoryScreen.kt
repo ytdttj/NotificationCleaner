@@ -40,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,6 +72,9 @@ import cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_TEXT
 import cc.ytdttj.noticleaner.data.db.NotificationEntity
 import cc.ytdttj.noticleaner.notify.KeepAliveManager
 import cc.ytdttj.noticleaner.ui.rules.AppPickerSession
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -572,6 +576,29 @@ internal fun NotificationDetail(
     onRevokeChannelBlock: () -> Unit = {},
 ) {
     var showLearnFocus by remember(n.id) { mutableStateOf(false) }
+    // 2.3.0 Dev 1：单击「广告通知」= 按原方式学习整条；快速连击三次 = 打开学习重点浮窗。
+    // 单击延迟一个连击窗口再执行，避免连击过程顺手多学 1~2 次（learnCount 被污染）。
+    val tapScope = rememberCoroutineScope()
+    var adTaps by remember(n.id) { mutableStateOf(0) }
+    var lastAdTapAt by remember(n.id) { mutableStateOf(0L) }
+    var pendingLearn by remember(n.id) { mutableStateOf<Job?>(null) }
+    fun onAdLearnClick() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastAdTapAt > AD_TRIPLE_TAP_WINDOW_MS) adTaps = 0
+        adTaps += 1
+        lastAdTapAt = now
+        pendingLearn?.cancel()
+        if (adTaps >= 3) {
+            adTaps = 0
+            showLearnFocus = true
+        } else {
+            pendingLearn = tapScope.launch {
+                delay(AD_TRIPLE_TAP_WINDOW_MS)
+                if (adTaps == 1) onLearn(1, null, null)
+                adTaps = 0
+            }
+        }
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
         if (n.title.isNotEmpty()) {
             Text(n.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -658,7 +685,7 @@ internal fun NotificationDetail(
                 n.learned && n.learnLabel == 0 -> "再学一次正常(${n.learnCount + 1})"
                 else -> "正常通知"
             }
-            Button(onClick = { showLearnFocus = true }, Modifier.weight(1f)) { Text(adText) }
+            Button(onClick = { onAdLearnClick() }, Modifier.weight(1f)) { Text(adText) }
             cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
                 onClick = { onLearn(0, null, null) },
                 Modifier.weight(1f),
@@ -873,6 +900,9 @@ private fun LearnFocusDialog(
         },
     )
 }
+
+/** 「广告通知」三连击窗口（毫秒）：两次点击间隔超过此值即重新计数 */
+private const val AD_TRIPLE_TAP_WINDOW_MS = 500L
 
 /** 模板候选（2.3.0 Dev 1）：组合优先展示，其次单标记 */
 private data class StructTemplate(val id: String, val label: String)
