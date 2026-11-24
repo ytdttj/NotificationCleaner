@@ -28,6 +28,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -64,6 +65,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -102,7 +104,7 @@ import kotlin.math.sign
  *   M3 模式渲染原样 Material 3，玻璃模式渲染液态玻璃——同一份布局代码、零功能差异
  * - 玻璃实现：backdrop 采样 → AGSL 折射 → RenderEffect 模糊 → 高光描边 + 半透明着色
  * - Dev 7 双采样源（分离式，详见 [GlassRoot]）：
- *     wallpaperBackdrop = 淡蓝纯色背景，供页面内玻璃卡片采样；
+ *     wallpaperBackdrop = 主题中性色背景，供页面内玻璃卡片采样；
  *     contentBackdrop   = 纯色底 + 页面真实内容，供悬浮底栏采样（透视滚动内容）。
  *   两者互不嵌套，玻璃元素均不在自己采样源的子树内——这是避免 RenderNode 自引用环的关键。
  * - 弹窗（独立窗口）无法采样主窗口，退化为磨砂半透明
@@ -127,9 +129,19 @@ val LocalContentBackdrop = compositionLocalOf<LayerBackdrop?> { null }
  */
 val GlassCardShape: Shape = RoundedRectangle(24.dp, RoundedCornerStyle.Continuous)
 
-/** 玻璃背景底色（1.4.0 Dev 7：淡蓝纯色，替代 Dev 6 的四色渐变壁纸） */
-private val GlassBackgroundColor = Color(0xFFD7E7F8)
-private val GlassBackgroundColorDark = Color(0xFF10161F)
+/**
+ * 玻璃背景底色（2.3.0 Dev 2：从动态配色派生，替代固定 #D7E7F8 淡蓝）。
+ *
+ * 旧版背景固定淡蓝，而主色跟随壁纸（Material You）——壁纸派生色偏酒红/紫时，
+ * 整屏控件与背景撞色，玻璃模式读起来像"另一个 App 的皮肤"（UI 复盘 P1-A）。
+ * 现在取同一套 colorScheme 的中性面：浅色 surfaceContainerHigh、深色 surfaceContainerLow，
+ * 折射/高光配方不变，只统一色相来源。
+ */
+@Composable
+private fun glassBackgroundColor(): Color {
+    val cs = MaterialTheme.colorScheme
+    return if (isSystemInDarkTheme()) cs.surfaceContainerLow else cs.surfaceContainerHigh
+}
 
 private fun glassBorder(dark: Boolean): Color =
     if (dark) Color.White.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.55f)
@@ -167,6 +179,25 @@ private fun glassFillTint(): Color {
         if (dark) Color(0xFF0E1420).copy(alpha = 0.80f) else Color.White.copy(alpha = 0.82f)
     } else {
         if (dark) Color(0xFF101726).copy(alpha = 0.93f) else Color.White.copy(alpha = 0.94f)
+    }
+}
+
+/**
+ * 弹层专用填充（2.3.0 Dev 2）：比 [glassFillTint] 更实。
+ *
+ * 弹窗/底弹层是独立窗口，无法采样主窗口，只能靠填充浓度保证可读性。柔光档 0.82 白
+ * 仍有约 18% 透射——真机上能清楚看到背后的列表文字，正文区呈"双层文字"（UI 复盘 P0-C）。
+ * 真机实测 0.94/0.95 仍能辨认出背后标题，故弹层压到接近不透明（柔光 0.98 / 磨砂 0.99）：
+ * 弹层不靠透射表达玻璃感，可读性优先。控件填充 [glassFillTint] 不受影响。
+ */
+@Composable
+private fun glassOverlayTint(): Color {
+    val dark = isSystemInDarkTheme()
+    val soft = LocalGlassStyle.current == GlassStyle.SOFT
+    return if (soft) {
+        if (dark) Color(0xFF0E1420).copy(alpha = 0.98f) else Color.White.copy(alpha = 0.98f)
+    } else {
+        if (dark) Color(0xFF101726).copy(alpha = 0.99f) else Color.White.copy(alpha = 0.99f)
     }
 }
 
@@ -259,8 +290,7 @@ fun GlassRoot(
 ) {
     val wallpaperBackdrop = rememberLayerBackdrop()
     val contentBackdrop = rememberLayerBackdrop()
-    val dark = isSystemInDarkTheme()
-    val background = if (dark) GlassBackgroundColorDark else GlassBackgroundColor
+    val background = glassBackgroundColor()
     CompositionLocalProvider(
         LocalGlassBackdrop provides wallpaperBackdrop,
         LocalContentBackdrop provides contentBackdrop,
@@ -280,24 +310,25 @@ fun GlassRoot(
 }
 
 /**
- * 玻璃采样背景：淡蓝纯色（1.4.0 Dev 7 起替代 Dev 6 的四色渐变壁纸）。
+ * 玻璃采样背景：与背景同一块中性面（2.3.0 Dev 2 起由 colorScheme 派生）。
  *
- * 纯色缺少可折射的纹理，玻璃感会明显变弱，因此叠一层 alpha ≤ 0.12 的大颗粒径向渐变：
- * 整体仍读作淡蓝纯色，但给 lens/blur 留了内容。不需要纹理时把 blobs 置空即可。
+ * 纯色缺少可折射的纹理，玻璃感会明显变弱，因此叠一层 alpha ≤ 0.14 的大颗粒径向渐变。
+ * 渐变取自主题的 primary/tertiary，保证跟壁纸动态色同源；不需要纹理时把 blobs 置空即可。
  */
 @Composable
 fun GlassWallpaper(modifier: Modifier = Modifier) {
     val dark = isSystemInDarkTheme()
-    val base = if (dark) GlassBackgroundColorDark else GlassBackgroundColor
+    val cs = MaterialTheme.colorScheme
+    val base = glassBackgroundColor()
     val blobs = if (dark) {
         listOf(
-            Color(0xFF2A3F6B).copy(alpha = 0.12f) to Offset(0.18f, 0.12f),
-            Color(0xFF1B3350).copy(alpha = 0.10f) to Offset(0.88f, 0.85f),
+            cs.primary.copy(alpha = 0.14f) to Offset(0.18f, 0.12f),
+            cs.tertiary.copy(alpha = 0.10f) to Offset(0.88f, 0.85f),
         )
     } else {
         listOf(
-            Color(0xFFBBD5F5).copy(alpha = 0.12f) to Offset(0.18f, 0.12f),
-            Color(0xFFCDE0F7).copy(alpha = 0.10f) to Offset(0.88f, 0.85f),
+            cs.primary.copy(alpha = 0.10f) to Offset(0.18f, 0.12f),
+            cs.tertiary.copy(alpha = 0.08f) to Offset(0.88f, 0.85f),
         )
     }
     Canvas(modifier) {
@@ -327,13 +358,18 @@ fun NcCard(
 ) {
     if (LocalGlassMode.current) {
         val clickable = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
-        Box(
-            modifier
-                .glassSurface(shape)
-                .clip(shape)
-                .then(clickable),
-        ) {
-            Column(content = content)
+        // 2.3.0 Dev 2：M3 Card 是 Surface、会 provide LocalContentColor；裸 Box 不会，
+        // 默认值 Color.Black → 深色玻璃下卡片标题/正文变黑不可读（UI 复盘 P0-A）。
+        // 这里显式 provide 一次，覆盖历史/统计/设置/规则所有 NcCard 内未指定颜色的 Text。
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
+            Box(
+                modifier
+                    .glassSurface(shape)
+                    .clip(shape)
+                    .then(clickable),
+            ) {
+                Column(content = content)
+            }
         }
     } else if (onClick != null) {
         Card(modifier = modifier, shape = shape, onClick = onClick, content = content)
@@ -423,7 +459,12 @@ fun NcAlertDialog(
             text = text,
             confirmButton = confirmButton,
             dismissButton = dismissButton,
-            containerColor = glassFillTint(),
+            containerColor = glassOverlayTint(),
+            // 自定义 containerColor 不是主题色角色，contentColorFor() 会回退到默认黑 →
+            // 深色档弹窗正文黑字不可读；显式给标题/正文/图标色（2.3.0 Dev 2 真机发现）
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
+            iconContentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedRectangle(28.dp, RoundedCornerStyle.Continuous),
         )
     } else {
@@ -447,7 +488,9 @@ fun NcModalBottomSheet(
     if (LocalGlassMode.current) {
         ModalBottomSheet(
             onDismissRequest = onDismissRequest,
-            containerColor = glassFillTint(),
+            containerColor = glassOverlayTint(),
+            // 同上：自定义容器色需显式给 contentColor，否则深色档弹层正文是黑色
+            contentColor = MaterialTheme.colorScheme.onSurface,
             content = content,
         )
     } else {
@@ -558,10 +601,27 @@ private val GlassBarBottomMargin = 24.dp
 
 /**
  * 悬浮底栏让位高度（1.4.0 Dev 14）：底栏由 GlassRoot 的 floatingBar 提供，位于
- * Scaffold 之外 → Scaffold 的 Snackbar 不知道它存在，会被底栏盖住（升级后"正在拟合
- * N 条标注…"提示看不见）。Snackbar/浮层用它做底部 padding 上移到底栏之上。
+ * Scaffold 之外 → Scaffold 不知道它存在。Snackbar/浮层用它做底部 padding 上移到底栏之上，
+ * 滚动容器用它做 contentPadding 的底部让位。
  */
 val GlassFloatingBarClearance = GlassBarBottomMargin + 56.dp + 16.dp
+
+/**
+ * 当前页面是否渲染悬浮底栏（2.3.0 Dev 2）。只有三个 tab 顶级页为 true，由 MainScaffold 下发；
+ * 二级页（统计明细/规则编辑/App 选择/开源项目）不渲染底栏。
+ */
+val LocalGlassFloatingBarVisible = compositionLocalOf { false }
+
+/**
+ * 滚动容器底部让位（2.3.0 Dev 2）：玻璃模式且当前页有悬浮底栏时 = [GlassFloatingBarClearance]。
+ *
+ * 底栏在 Scaffold 之外，框架不会替任何滚动容器让位——漏一处就有一处内容永远看不见
+ * （UI 复盘 P0-B：历史列表最后一条被底栏永久遮挡）。所有 tab 页的 LazyColumn/verticalScroll
+ * 都应把它加到 contentPadding/padding 的底部，不要再逐处手写条件。
+ */
+@Composable
+fun glassFloatingBarClearance(): Dp =
+    if (LocalGlassMode.current && LocalGlassFloatingBarVisible.current) GlassFloatingBarClearance else 0.dp
 
 /** 悬浮底栏宽度占屏幕宽度的比例（Dev 14：3/5） */
 private const val GlassBarWidthFraction = 0.6f

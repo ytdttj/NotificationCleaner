@@ -293,11 +293,9 @@ class HistoryViewModel(
                 label == 1 && learnFocus.isNotEmpty() -> "已按所选学习重点学习为广告并清除"
                 label == 1 -> "已学习为广告通知并清除"
                 hitRule != null ->
-                    "已学习为正常通知；但该通知命中规则「${hitRule.appName}｜${hitRule.keyword.ifBlank { "条件规则" }}」，" +
-                        "规则优先于学习，仍会被拦截——请到「规则」页调整或删除该规则"
+                    "已学习为正常通知，但仍命中规则「${hitRule.appName}｜${hitRule.keyword.ifBlank { "条件规则" }}」"
                 mix != null && mix.ad > 0 ->
-                    "已学习为正常通知；但该渠道还有 ${mix.ad} 条广告标注，会把本渠道整体抬高，" +
-                        "光靠逐条学习可能仍被拦——如仍被拦，请点「此渠道不再拦截」"
+                    "已学习为正常通知，但该渠道广告较多，可能仍被拦截"
                 else -> "已学习为正常通知"
             }
         }

@@ -205,7 +205,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
         Spacer(Modifier.height(12.dp))
         PermissionCard(
             title = "通知发送权限",
-            desc = "Android 13+ 需要授权才能显示常驻保活通知与更新提醒（点击授权）。",
+            desc = "用于显示保活通知与更新提醒。",
             statusText = if (status.notificationsGranted) "已授权" else "未授权",
             granted = status.notificationsGranted,
             buttonText = "去授权",
@@ -214,7 +214,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
         Spacer(Modifier.height(12.dp))
         PermissionCard(
             title = "自启动权限",
-            desc = "允许开机自启与后台拉起（厂商手机必需）。系统无检测接口，请手动确认已开启。",
+            desc = "允许开机自启与后台拉起，需手动确认。",
             statusText = "请手动确认",
             granted = null,
             buttonText = "去设置",
@@ -228,7 +228,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
         ) { Text("完成初始化") }
         Spacer(Modifier.height(8.dp))
         Text(
-            "提示：未全部授权也可以进入应用，但通知过滤与后台保活可能无法生效，可随时在「设置」中查看保活状态。",
+            "未全部授权也可进入，但过滤与保活可能失效。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

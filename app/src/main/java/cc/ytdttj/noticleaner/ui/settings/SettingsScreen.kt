@@ -1,5 +1,6 @@
 package cc.ytdttj.noticleaner.ui.settings
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -38,6 +39,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -115,8 +117,8 @@ class SettingsViewModel(
      *   学完通知返回设置页仍显示旧值 0。）
      */
     val modelInfo: StateFlow<String> = dao.learnedCount().map { n ->
-        "已学习样本：$n 条（NSPM v2 基线 + 端上学习修正）"
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "已学习样本：0 条（NSPM v2 基线 + 端上学习修正）")
+        "已学习样本：$n 条"
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "已学习样本：0 条")
 
     init {
         refreshKeepAlive()
@@ -335,7 +337,7 @@ class SettingsViewModel(
             return
         }
         _simulateBusy.value = true
-        _toast.value = "5 秒后发送，请立刻回到桌面（App 在前台时系统不渲染岛）"
+        _toast.value = "5 秒后发送，请回到桌面。"
         cc.ytdttj.noticleaner.notify.island.IslandNotifier.postSimulated(
             ServiceLocator.appContext, pkg, title, content,
         ) { msg ->
@@ -366,7 +368,6 @@ class SettingsViewModel(
                 ServiceLocator.keepAlive.isRootAvailable() -> RootExecutor
                 else -> {
                     _execBusy.value = false
-                    _toast.value = "需要 Shizuku（已授权）或 Root 才能强制修复；普通用户可直接开关一次通知监听权限"
                     return@launch
                 }
             }
@@ -474,6 +475,22 @@ class SettingsViewModel(
     }
 }
 
+/**
+ * 2.3.0 Dev 2：统一折叠 affordance。
+ *
+ * 此前同一页存在两套：一处用「▸/▾」字符前缀，两处用右侧「展开/收起」文案（UI 复盘）。
+ * 现在三处折叠块统一为右侧旋转箭头：收起 0°、展开 180°。
+ */
+@Composable
+private fun CollapseChevron(expanded: Boolean) {
+    val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "collapseChevron")
+    androidx.compose.material3.Icon(
+        Icons.Filled.ArrowDropDown,
+        contentDescription = if (expanded) "收起" else "展开",
+        modifier = Modifier.rotate(rotation),
+    )
+}
+
 @Composable
 fun SettingsScreen(
     onOpenStats: (String) -> Unit,
@@ -516,12 +533,8 @@ fun SettingsScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             // Dev 15：玻璃模式下悬浮底栏位于 Scaffold 之外，会盖住滚到最底部的功能块
-            // → 内容底部让位一个底栏高度（非玻璃模式有 bottomBar，无需让位）
-            .padding(bottom = if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
-                cc.ytdttj.noticleaner.ui.glass.GlassFloatingBarClearance
-            } else {
-                0.dp
-            })
+            // → 内容底部让位一个底栏高度（2.3.0 Dev 2：统一走 glassFloatingBarClearance()）
+            .padding(bottom = cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance())
             .padding(16.dp),
     ) {
         // ---- 界面风格切换（1.4.0 Dev 4）：液态玻璃 / Material 3 ----
@@ -529,7 +542,7 @@ fun SettingsScreen(
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("界面风格", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("液态玻璃或 Material 3；玻璃模式含壁纸折射、磨砂卡片与胶囊底栏", style = MaterialTheme.typography.bodySmall)
+                    Text("液态玻璃含背景折射与磨砂卡片", style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(
                     checked = uiThemeMode == cc.ytdttj.noticleaner.ui.UiTheme.GLASS.name,
@@ -548,8 +561,6 @@ fun SettingsScreen(
             cc.ytdttj.noticleaner.ui.glass.NcCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text("玻璃清晰度", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text("柔光玻璃近乎全透明；磨砂玻璃提供一定可读性", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(8.dp))
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         cc.ytdttj.noticleaner.ui.GlassStyle.entries.forEachIndexed { index, style ->
@@ -647,7 +658,7 @@ fun SettingsScreen(
                 Column(Modifier.weight(1f)) {
                     Text("在多任务界面隐藏", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "系统多任务界面不显示本 APP 的后台卡片，防止误滑删除（需 Android 10+，关闭后恢复显示）",
+                        "系统多任务界面不显示本应用卡片，避免误滑删除",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -680,28 +691,27 @@ fun SettingsScreen(
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f),
                     )
-                    Text(if (permAdvancedOpen) "收起" else "展开", style = MaterialTheme.typography.bodySmall)
+                    CollapseChevron(permAdvancedOpen)
                 }
                 if (permAdvancedOpen) {
                     Spacer(Modifier.height(4.dp))
                     AdvancedRow(
                         label = "Shizuku 保活",
-                        desc = "免 Root 写入电池优化白名单 / 通知监听权限",
+                        desc = "免 Root 写入白名单与监听权限",
                         ok = keepAlive.shizukuAvailable,
                         actionLabel = if (keepAlive.shizukuAvailable) "应用" else "授权",
                         onAction = { if (keepAlive.shizukuAvailable) vm.applyShizuku() else vm.requestShizuku() },
                     )
                     AdvancedRow(
                         label = "Root 保活",
-                        desc = "以 Root 执行白名单与厂商自启动命令（最彻底）",
+                        desc = "以 Root 执行白名单与自启动命令",
                         ok = keepAlive.rootAvailable,
                         actionLabel = "应用",
                         onAction = { if (keepAlive.rootAvailable) vm.applyRoot() else vm.showToast("未检测到 Root（su）") },
                     )
                     AdvancedRow(
                         label = "LSPosed 保活",
-                        desc = "安装 LSPosed 并激活本模块（作用域勾选「系统(android)」）后自动生效，重启手机完成。" +
-                            "未打勾 = 未检测到激活证据（框架服务/模块心跳），以 LSPosed 管理器为准",
+                        desc = "在 LSPosed 中启用本模块并勾选「系统(android)」，重启后生效",
                         ok = keepAlive.lspDetected == true,
                         actionLabel = if (lspServiceState.bound && !lspServiceState.hasScope(
                                 cc.ytdttj.noticleaner.keepalive.LspServiceDetector.SCOPE_SYSTEM_SERVER,
@@ -714,7 +724,7 @@ fun SettingsScreen(
                     )
                     AdvancedRow(
                         label = "重启岛作用域",
-                        desc = "以 Root 重启 系统界面 + 小米服务框架：更新模块或修改 LSPosed 作用域后让岛 hook 立即生效，无需整机重启",
+                        desc = "重启系统界面与小米服务框架，让岛 hook 立即生效",
                         ok = keepAlive.rootAvailable,
                         actionLabel = if (keepAlive.rootAvailable) "重启" else null,
                         onAction = {
@@ -724,14 +734,14 @@ fun SettingsScreen(
                     )
                     AdvancedRow(
                         label = "无障碍保活",
-                        desc = "开启「保活守护」无障碍服务：系统绑定的第二条生命线，不读取屏幕内容",
+                        desc = "开启「保活守护」无障碍服务，作为第二条保活通道",
                         ok = keepAlive.accessibilityEnabled,
                         actionLabel = if (keepAlive.accessibilityEnabled) null else "去开启",
                         onAction = { vm.openAccessibilitySettings() },
                     )
                     AdvancedRow(
                         label = "修复通知监听",
-                        desc = "监听断连且无法自愈时的强制修复（需 Shizuku 已授权或 Root）",
+                        desc = "监听断连时强制修复（需 Shizuku 或 Root）",
                         ok = keepAlive.listenerEnabled,
                         actionLabel = "修复",
                         onAction = { vm.repairListener() },
@@ -810,8 +820,7 @@ fun SettingsScreen(
                     Column(Modifier.weight(1f)) {
                         Text("导出诊断日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "导出 ZIP：每个模块一个 log 文件，各自覆盖导出前完整 24 小时；" +
-                                "通知历史 CSV 覆盖最近 30 天",
+                            "导出各模块 24 小时日志与 30 天通知历史",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -856,10 +865,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        if (historyPanelOpen) "▾ 历史通知管理" else "▸ 历史通知管理",
+                        "历史通知管理",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
                     )
+                    CollapseChevron(historyPanelOpen)
                 }
                 if (historyPanelOpen) {
                     Spacer(Modifier.height(8.dp))
@@ -870,10 +881,7 @@ fun SettingsScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("导出历史通知 CSV", style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                "最近 30 天历史通知（应用/包名/通道/标题/正文/AI率/学习状态），经系统分享",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                            Text("导出最近 30 天通知记录", style = MaterialTheme.typography.bodySmall)
                         }
                         cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
                             enabled = !csvExporting,
@@ -914,8 +922,7 @@ fun SettingsScreen(
                     Column(Modifier.fillMaxWidth()) {
                         Text("历史保留天数：${retentionDraft} 天", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "未学习的历史通知只保留所选天数（1~365 天，默认 30 天），最新通知不断把最老的顶掉" +
-                                "（监控式循环保存）；已学习的标注不受影响",
+                            "仅影响未学习通知，已学习标注永久保留",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         androidx.compose.material3.Slider(
@@ -958,7 +965,7 @@ fun SettingsScreen(
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f),
                     )
-                    Text(if (advancedOpen) "收起" else "展开", style = MaterialTheme.typography.bodySmall)
+                    CollapseChevron(advancedOpen)
                 }
                 if (advancedOpen) {
                     Spacer(Modifier.height(12.dp))
@@ -973,19 +980,19 @@ fun SettingsScreen(
                 Text("超级岛支付提醒（实验）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "银行/支付类 App 的收支通知自动上岛：摘要态显示来源图标与金额，展开显示详情。" +
-                        "认证放行依赖 LSPosed 模块（需在 LSPosed 中启用本模块并勾选" +
-                        "系统界面 + 小米服务框架作用域），失败自动退化为普通通知。",
+                    "动账通知上岛，以方便记账。依赖LSPosed框架。",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(islandProbe, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        // 2.3.0 Dev 2：探针多行原文（白名单/LSPosed/Shizuku）不再直接铺在卡片上，
+                        // 这里只显示系统条目；完整探测结果收进「诊断日志」弹窗（UI 复盘：调试信息泄漏到 UI）
+                        Text(islandProbe.substringBefore('\n'), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                     Switch(checked = islandEnabled, onCheckedChange = { vm.setIslandEnabled(it) })
                 }
-                Text("上岛应用（勾选后，该应用含金额的收支通知才会上岛）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("上岛应用", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 cc.ytdttj.noticleaner.notify.island.IslandNotifier.PACKAGE_LABELS.forEach { (pkg, label) ->
                     Row(
@@ -1010,13 +1017,21 @@ fun SettingsScreen(
                 if (showDiag) {
                     cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                         onDismissRequest = { showDiag = false },
-                        title = { Text("岛链路诊断") },
+                        title = { Text("运行环境与链路诊断") },
                         text = {
                             Column(
                                 Modifier
                                     .heightIn(max = 420.dp)
                                     .verticalScroll(rememberScrollState()),
                             ) {
+                                Text("系统环境", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(4.dp))
+                                Text(islandProbe, style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(12.dp))
+                                HorizontalDivider()
+                                Spacer(Modifier.height(12.dp))
+                                Text("岛链路", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(4.dp))
                                 Text(
                                     cc.ytdttj.noticleaner.notify.island.IslandTrace.dump(),
                                     style = MaterialTheme.typography.bodySmall,
@@ -1054,8 +1069,7 @@ fun SettingsScreen(
                 Text("通知模拟（测试）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "以 Shell 身份发送一条通知进入完整过滤管线（AI 评分 → 决策 → 入库 → 上岛），岛展示按所选应用处理。" +
-                        "系统限制：通知栏那条通知的来源固定显示 Shell，无法伪造他人包名。",
+                    "模拟一条通知进入完整过滤与上岛链路。",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(8.dp))
@@ -1106,8 +1120,7 @@ fun SettingsScreen(
                     ) { Text("Shell 通知方式") }
                 }
                 Text(
-                    "注入管线 = 跳过系统通知直接测试上岛链路（推荐）。点击后 5 秒才发送——请立刻回到桌面：" +
-                        "HyperOS 前台抑制，App 自己在前台时不渲染岛，展开态也只对后台到达的通知生效。Shell 通知方式仅验证通知栏投递。",
+                    "注入管线直接测试上岛链路；点击后 5 秒发送，请先回到桌面。",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray,
                 )
@@ -1129,7 +1142,7 @@ fun SettingsScreen(
                         cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
                             onDismissRequest = { confirmResetModel = false },
                             title = { Text("确认重置模型？") },
-                            text = { Text("将清除所有学习标注，模型回到预训练基线。已拦截统计不受影响，此操作不可撤销。") },
+                            text = { Text("将清除所有学习标注，此操作不可撤销。") },
                             confirmButton = {
                                 TextButton(onClick = { vm.resetModel(); confirmResetModel = false }) { Text("确认重置") }
                             },
@@ -1151,11 +1164,6 @@ fun SettingsScreen(
                         "参考开源项目",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "本项目的借鉴、参考与依赖来源",
-                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 Text("›", style = MaterialTheme.typography.titleMedium, color = Color.Gray)

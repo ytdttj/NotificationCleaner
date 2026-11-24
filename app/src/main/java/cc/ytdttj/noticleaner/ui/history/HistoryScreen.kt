@@ -125,13 +125,9 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpe
     }
 
     // Dev 14：玻璃模式下悬浮底栏位于 Scaffold 之外，Snackbar 默认贴底会被它盖住
-    // （升级后"正在拟合 N 条标注…"看不见）→ 底部让位一个底栏高度
-    val snackbarBottomPadding =
-        if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
-            cc.ytdttj.noticleaner.ui.glass.GlassFloatingBarClearance
-        } else {
-            0.dp
-        }
+    // （升级后"正在拟合 N 条标注…"看不见）→ 底部让位一个底栏高度。
+    // 2.3.0 Dev 2：让位统一走 glassFloatingBarClearance()（二级页无底栏时为 0）。
+    val snackbarBottomPadding = cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance()
 
     // 1.4.0 Dev 13：外层 MainScaffold 已应用状态栏 inset，此处必须清零，
     // 否则顶部 inset 双叠加 → 筛选按钮上方一大片空白
@@ -197,7 +193,14 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpe
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    // 2.3.0 Dev 2：底栏在 Scaffold 之外，列表必须自己让位，
+                    // 否则滚到底最后一条被悬浮底栏永久遮挡（UI 复盘 P0-B）
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        start = 12.dp,
+                        top = 12.dp,
+                        end = 12.dp,
+                        bottom = 12.dp + cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance(),
+                    ),
                 ) {
                     // Dev 6：日期分组头——列表从新到旧，相邻两条日期不同时插入"9月25日"分隔
                     itemsIndexed(list, key = { _, n -> n.id }) { i, n ->
@@ -364,22 +367,28 @@ private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
                 if (n.content.isNotEmpty()) {
                     Text(n.content, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-                // 右下角：简单广告率（按阈值区间着色）
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val pct = (n.adProbability * 100).toInt()
-                    Text(
-                        "广告率 $pct%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when {
-                            n.adProbability >= 0.8f -> MaterialTheme.colorScheme.error
-                            n.adProbability >= 0.5f -> MaterialTheme.colorScheme.tertiary
-                            else -> MaterialTheme.colorScheme.outline
-                        },
-                    )
+                // 2.3.0 Dev 2：AI 过滤徽章已显示同一概率，右下角不再重复"广告率 %"
+                // （UI 复盘：同一张卡出现两个 87%，措辞还不一样）；其他决策没有概率徽章，保留。
+                val badgeShowsProbability =
+                    n.decision == DECISION_FILTERED_BY_AI || n.decision == DECISION_FILTERED_BY_AI_MODULE
+                if (!badgeShowsProbability) {
+                    // 右下角：简单广告率（按阈值区间着色）
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        val pct = (n.adProbability * 100).toInt()
+                        Text(
+                            "广告率 $pct%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when {
+                                n.adProbability >= 0.8f -> MaterialTheme.colorScheme.error
+                                n.adProbability >= 0.5f -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.outline
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -778,8 +787,7 @@ private fun LearnFocusDialog(
                     .verticalScroll(rememberScrollState()),
             ) {
                 Text(
-                    "优先选「模板特征」——它们与正文措辞无关，能覆盖下一批同类推送；" +
-                        "关键词只适合多条推送里反复出现的固定文字。",
+                    "优先选「模板特征」，可覆盖同类推送。",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (templates.isNotEmpty()) {

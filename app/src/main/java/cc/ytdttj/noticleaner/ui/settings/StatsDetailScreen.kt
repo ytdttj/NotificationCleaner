@@ -268,16 +268,14 @@ fun StatsDetailScreen(
         )
     }
 
-    // Dev 14：玻璃模式下悬浮底栏在 Scaffold 之外，Snackbar 需上移让位，否则被盖住
-    val snackbarBottomPadding =
-        if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
-            cc.ytdttj.noticleaner.ui.glass.GlassFloatingBarClearance
-        } else {
-            0.dp
-        }
+    // Dev 14：玻璃模式下悬浮底栏在 Scaffold 之外，Snackbar 需上移让位。
+    // 2.3.0 Dev 2：二级页不再渲染底栏，让位高度统一由 helper 给出（无底栏时为 0）
+    val snackbarBottomPadding = cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance()
     val selected by vm.selected.collectAsState()
 
     cc.ytdttj.noticleaner.ui.glass.NcScaffold(
+        // 2.3.0 Dev 2：外层 MainScaffold 已应用 inset，内层清零避免顶部双叠加
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         snackbarHost = {
             Box(Modifier.padding(bottom = snackbarBottomPadding)) { SnackbarHost(snackbar) }
         },
@@ -307,7 +305,15 @@ fun StatsDetailScreen(
                 Text("暂无记录", style = MaterialTheme.typography.titleMedium)
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(12.dp)) {
+            LazyColumn(
+                Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(
+                    start = 12.dp,
+                    top = 12.dp,
+                    end = 12.dp,
+                    bottom = 12.dp + cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance(),
+                ),
+            ) {
                 items(items, key = { it.id }) { n ->
                     // Dev 14：条目可点击 → 打开与历史页同款的详情弹层（可重新学习/取消学习）
                     cc.ytdttj.noticleaner.ui.glass.NcCard(
