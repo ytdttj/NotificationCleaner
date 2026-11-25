@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.AssistChip
@@ -37,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +54,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import cc.ytdttj.noticleaner.ServiceLocator
+import cc.ytdttj.noticleaner.ai.FeatureHasher
+import cc.ytdttj.noticleaner.ai.SpamTuner
 import cc.ytdttj.noticleaner.data.db.DECISION_CHANNEL_ALLOW
 import cc.ytdttj.noticleaner.data.db.DECISION_CHANNEL_BLOCK
 import cc.ytdttj.noticleaner.data.db.DECISION_CONVERSATION
@@ -61,9 +67,14 @@ import cc.ytdttj.noticleaner.data.db.DECISION_MANUAL_MARKED_AD
 import cc.ytdttj.noticleaner.data.db.DECISION_MEDIA
 import cc.ytdttj.noticleaner.data.db.DECISION_ONGOING
 import cc.ytdttj.noticleaner.data.db.DECISION_WHITELIST
+import cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT
+import cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_TEXT
 import cc.ytdttj.noticleaner.data.db.NotificationEntity
 import cc.ytdttj.noticleaner.notify.KeepAliveManager
 import cc.ytdttj.noticleaner.ui.rules.AppPickerSession
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -114,13 +125,9 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpe
     }
 
     // Dev 14：玻璃模式下悬浮底栏位于 Scaffold 之外，Snackbar 默认贴底会被它盖住
-    // （升级后"正在拟合 N 条标注…"看不见）→ 底部让位一个底栏高度
-    val snackbarBottomPadding =
-        if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
-            cc.ytdttj.noticleaner.ui.glass.GlassFloatingBarClearance
-        } else {
-            0.dp
-        }
+    // （升级后"正在拟合 N 条标注…"看不见）→ 底部让位一个底栏高度。
+    // 2.3.0 Dev 2：让位统一走 glassFloatingBarClearance()（二级页无底栏时为 0）。
+    val snackbarBottomPadding = cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance()
 
     // 1.4.0 Dev 13：外层 MainScaffold 已应用状态栏 inset，此处必须清零，
     // 否则顶部 inset 双叠加 → 筛选按钮上方一大片空白
@@ -186,7 +193,14 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpe
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    // 2.3.0 Dev 2：底栏在 Scaffold 之外，列表必须自己让位，
+                    // 否则滚到底最后一条被悬浮底栏永久遮挡（UI 复盘 P0-B）
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        start = 12.dp,
+                        top = 12.dp,
+                        end = 12.dp,
+                        bottom = 12.dp + cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance(),
+                    ),
                 ) {
                     // Dev 6：日期分组头——列表从新到旧，相邻两条日期不同时插入"9月25日"分隔
                     itemsIndexed(list, key = { _, n -> n.id }) { i, n ->
@@ -207,7 +221,7 @@ fun HistoryScreen(vm: HistoryViewModel = viewModel(factory = vmFactory()), onOpe
                     onJumpChannel = {
                         KeepAliveManager.openChannelSettings(context, n.packageName, n.channelId)
                     },
-                    onLearn = { label -> vm.learn(n, label) },
+                    onLearn = { label, focus, kind -> vm.learn(n, label, focus, kind) },
                     onUnlearn = { vm.unlearn(n) },
                     channelAllowed = vm.channelAllowKeyOf(n) in allowedChannels,
                     onAllowChannel = { vm.allowChannel(n) },
@@ -353,22 +367,28 @@ private fun NotificationCard(n: NotificationEntity, onClick: () -> Unit) {
                 if (n.content.isNotEmpty()) {
                     Text(n.content, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-                // 右下角：简单广告率（按阈值区间着色）
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val pct = (n.adProbability * 100).toInt()
-                    Text(
-                        "广告率 $pct%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when {
-                            n.adProbability >= 0.8f -> MaterialTheme.colorScheme.error
-                            n.adProbability >= 0.5f -> MaterialTheme.colorScheme.tertiary
-                            else -> MaterialTheme.colorScheme.outline
-                        },
-                    )
+                // 2.3.0 Dev 2：AI 过滤徽章已显示同一概率，右下角不再重复"广告率 %"
+                // （UI 复盘：同一张卡出现两个 87%，措辞还不一样）；其他决策没有概率徽章，保留。
+                val badgeShowsProbability =
+                    n.decision == DECISION_FILTERED_BY_AI || n.decision == DECISION_FILTERED_BY_AI_MODULE
+                if (!badgeShowsProbability) {
+                    // 右下角：简单广告率（按阈值区间着色）
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        val pct = (n.adProbability * 100).toInt()
+                        Text(
+                            "广告率 $pct%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when {
+                                n.adProbability >= 0.8f -> MaterialTheme.colorScheme.error
+                                n.adProbability >= 0.5f -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.outline
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -545,12 +565,17 @@ private fun DateHeader(day: java.time.LocalDate) {
 /**
  * 通知详情弹层内容（internal：Dev 14 起统计明细页点击条目也复用它，
  * 学习/取消学习交互与历史页完全一致）。
+ *
+ * 2.3.0 Dev 1：点「广告通知」先弹出学习重点浮窗（[LearnFocusDialog]），
+ * 由用户勾选标题/正文关键词，或选择「模板特征」（`@`、`详情>>`、`@ + 详情>>`）。
+ * [onLearn] 第二参数为所选重点（TEXT 存原文，STRUCT 存 `at+detail_gt`），
+ * 第三参数为其类型；空串 = 整条通知。
  */
 @Composable
 internal fun NotificationDetail(
     n: NotificationEntity,
     onJumpChannel: () -> Unit,
-    onLearn: (Int) -> Unit,
+    onLearn: (Int, String?, String?) -> Unit,
     onUnlearn: () -> Unit,
     channelAllowed: Boolean = false,
     onAllowChannel: () -> Unit = {},
@@ -559,6 +584,30 @@ internal fun NotificationDetail(
     onBlockChannel: () -> Unit = {},
     onRevokeChannelBlock: () -> Unit = {},
 ) {
+    var showLearnFocus by remember(n.id) { mutableStateOf(false) }
+    // 2.3.0 Dev 1：单击「广告通知」= 按原方式学习整条；快速连击三次 = 打开学习重点浮窗。
+    // 单击延迟一个连击窗口再执行，避免连击过程顺手多学 1~2 次（learnCount 被污染）。
+    val tapScope = rememberCoroutineScope()
+    var adTaps by remember(n.id) { mutableStateOf(0) }
+    var lastAdTapAt by remember(n.id) { mutableStateOf(0L) }
+    var pendingLearn by remember(n.id) { mutableStateOf<Job?>(null) }
+    fun onAdLearnClick() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastAdTapAt > AD_TRIPLE_TAP_WINDOW_MS) adTaps = 0
+        adTaps += 1
+        lastAdTapAt = now
+        pendingLearn?.cancel()
+        if (adTaps >= 3) {
+            adTaps = 0
+            showLearnFocus = true
+        } else {
+            pendingLearn = tapScope.launch {
+                delay(AD_TRIPLE_TAP_WINDOW_MS)
+                if (adTaps == 1) onLearn(1, null, null)
+                adTaps = 0
+            }
+        }
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
         if (n.title.isNotEmpty()) {
             Text(n.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -575,6 +624,18 @@ internal fun NotificationDetail(
         )
         Text("发送通道：${n.channelId.ifEmpty { "（默认/未知）" }}", style = MaterialTheme.typography.bodySmall)
         Text("AI 判定：广告概率 ${(n.adProbability * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+        if (n.learnFocus.isNotBlank()) {
+            val label = if (n.learnFocusKind == LEARN_FOCUS_STRUCT) {
+                "学习重点：模板 ${cc.ytdttj.noticleaner.ai.FeatureHasher.structComboLabel(n.learnFocus)}"
+            } else {
+                "学习重点：${n.learnFocus.replace("\n", " / ")}"
+            }
+            Text(
+                label,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        }
 
         Spacer(Modifier.height(16.dp))
         Button(onClick = onJumpChannel, Modifier.fillMaxWidth()) {
@@ -633,15 +694,265 @@ internal fun NotificationDetail(
                 n.learned && n.learnLabel == 0 -> "再学一次正常(${n.learnCount + 1})"
                 else -> "正常通知"
             }
-            Button(onClick = { onLearn(1) }, Modifier.weight(1f)) { Text(adText) }
-            cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(onClick = { onLearn(0) }, Modifier.weight(1f)) { Text(normalText) }
+            Button(onClick = { onAdLearnClick() }, Modifier.weight(1f)) { Text(adText) }
+            cc.ytdttj.noticleaner.ui.glass.NcOutlinedButton(
+                onClick = { onLearn(0, null, null) },
+                Modifier.weight(1f),
+            ) { Text(normalText) }
         }
         if (n.learned) {
             Spacer(Modifier.height(8.dp))
             AssistChip(onClick = onUnlearn, label = { Text("取消学习") })
         }
         Spacer(Modifier.height(24.dp))
+
+        if (showLearnFocus) {
+            LearnFocusDialog(
+                n = n,
+                onDismiss = { showLearnFocus = false },
+                onConfirm = { focus, kind ->
+                    showLearnFocus = false
+                    onLearn(1, focus, kind)
+                },
+            )
+        }
     }
+}
+
+/**
+ * 2.3.0 Dev 1：学习重点选择浮窗。
+ *
+ * 选项分三组：
+ * 1. **模板特征**（`@`、`详情>>`、`@ + 详情>>`、网页链接、[分享]）——走 STRUCT 样本，
+ *    只给结构桶加权、不学文本 n-gram；组合优先，单 `@` 需二次确认；
+ * 2. 标题 / 正文关键词——走 TEXT 样本，只学文本片段；
+ * 3. 自由编辑——留空 = 整条通知。
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun LearnFocusDialog(
+    n: NotificationEntity,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String) -> Unit,
+) {
+    val whole = remember(n.id) {
+        listOf(n.title, n.content).filter { it.isNotEmpty() }.joinToString("\n")
+    }
+    val templates = remember(n.id) { templateCandidates(whole) }
+    // 结构模板与文本重点互斥：选了模板就清空文本框，反之亦然
+    var structId by remember(n.id) {
+        mutableStateOf(if (n.learnFocusKind == LEARN_FOCUS_STRUCT) n.learnFocus else "")
+    }
+    var focus by remember(n.id) {
+        mutableStateOf(if (n.learnFocusKind == LEARN_FOCUS_STRUCT) "" else n.learnFocus)
+    }
+    var atConfirmed by remember(n.id) { mutableStateOf(false) }
+    val parts = focus.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+    val candidates = remember(n.id) { focusCandidates(n.content) }
+
+    fun toggleText(part: String) {
+        structId = ""
+        atConfirmed = false
+        val list = focus.split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+        if (!list.remove(part)) list.add(part)
+        focus = list.joinToString("\n")
+    }
+
+    fun selectTemplate(t: StructTemplate) {
+        focus = ""
+        atConfirmed = false
+        structId = if (structId == t.id) "" else t.id
+    }
+
+    val effective = focus.ifBlank { whole }
+    // 与 SpamTuner.MIN_LENGTH 对齐：文本样本归一化后不足 4 个有效字符会被拟合丢弃；
+    // 结构样本（`@` 归一化后为空）不受此限制。
+    val effectiveLen = remember(effective) { FeatureHasher.normalize(effective).length }
+    val hasStruct = structId.isNotBlank()
+    val singleAt = structId == FeatureHasher.STRUCT_AT
+    val tooShort = !hasStruct && effectiveLen < SpamTuner.MIN_LENGTH
+    val willLearn = when {
+        hasStruct -> "将学习模板：${FeatureHasher.structComboLabel(structId)}"
+        focus.isBlank() -> "将学习：整条通知（$effectiveLen 个有效字符）"
+        else -> "将学习：${focus.replace("\n", " / ")}"
+    }
+
+    cc.ytdttj.noticleaner.ui.glass.NcAlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择学习重点") },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(
+                    "优先选「模板特征」，可覆盖同类推送。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (templates.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("模板特征", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(4.dp))
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        templates.forEach { t ->
+                            FilterChip(
+                                selected = structId == t.id,
+                                onClick = { selectTemplate(t) },
+                                label = { Text(t.label, maxLines = 1) },
+                            )
+                        }
+                    }
+                }
+                if (n.title.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("标题", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(4.dp))
+                    FilterChip(
+                        selected = n.title.trim() in parts,
+                        onClick = { toggleText(n.title.trim()) },
+                        label = {
+                            Text(n.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
+                    )
+                }
+                if (candidates.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("正文关键词", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(4.dp))
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        candidates.forEach { c ->
+                            FilterChip(
+                                selected = c in parts,
+                                onClick = { toggleText(c) },
+                                label = {
+                                    Text(
+                                        c,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                cc.ytdttj.noticleaner.ui.glass.NcOutlinedTextField(
+                    value = focus,
+                    onValueChange = {
+                        focus = it
+                        structId = ""
+                        atConfirmed = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("学习内容（留空 = 整条通知）") },
+                    minLines = 2,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    willLearn,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (singleAt) {
+                    Text(
+                        "单学 @ 会影响该 App 的所有 @ 推送（包括真人 @），建议改选「@ + 详情>>」组合模板",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (tooShort) {
+                    Text(
+                        "有效字符不足 ${SpamTuner.MIN_LENGTH} 个，模型会忽略本次学习；" +
+                            "请再选上标题或更多文字",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (singleAt && !atConfirmed) {
+                        atConfirmed = true
+                    } else {
+                        onConfirm(
+                            if (hasStruct) structId else focus.trim(),
+                            if (hasStruct) LEARN_FOCUS_STRUCT else LEARN_FOCUS_TEXT,
+                        )
+                    }
+                },
+                enabled = !tooShort,
+            ) {
+                Text(
+                    when {
+                        singleAt && !atConfirmed -> "只学 @，继续"
+                        hasStruct -> "学习该模板"
+                        n.learned && n.learnLabel == 1 -> "再学一次广告"
+                        else -> "学习为广告"
+                    },
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
+}
+
+/** 「广告通知」三连击窗口（毫秒）：两次点击间隔超过此值即重新计数 */
+private const val AD_TRIPLE_TAP_WINDOW_MS = 500L
+
+/** 模板候选（2.3.0 Dev 1）：组合优先展示，其次单标记 */
+private data class StructTemplate(val id: String, val label: String)
+
+private fun templateCandidates(rawText: String): List<StructTemplate> {
+    val marks = FeatureHasher.structMarksOf(rawText)
+    if (marks.isEmpty()) return emptyList()
+    val out = ArrayList<StructTemplate>()
+    if (marks.size >= 2) {
+        val id = FeatureHasher.structComboId(FeatureHasher.preferredStructCombo(marks))
+        out.add(StructTemplate(id, FeatureHasher.structComboLabel(id)))
+    }
+    val labels = mapOf(
+        FeatureHasher.STRUCT_AT to "@",
+        FeatureHasher.STRUCT_DETAIL_GT to "详情>>",
+        FeatureHasher.STRUCT_LINK to "网页链接",
+        FeatureHasher.STRUCT_SHARE to "[分享]",
+    )
+    for (m in marks) out.add(StructTemplate(m, labels[m] ?: m))
+    return out
+}
+
+/**
+ * 正文候选关键词（2.3.0 Dev 1）：按标点/空白切成连续文字段，保留 2~20 字的片段。
+ *
+ * 刻意不做分词/词频模型——候选只是给用户的快捷入口，真正的选择与编辑权仍在用户手里。
+ */
+private fun focusCandidates(content: String): List<String> {
+    if (content.isBlank()) return emptyList()
+    val out = LinkedHashSet<String>()
+    val sb = StringBuilder()
+    fun flush() {
+        if (sb.isEmpty()) return
+        val s = sb.toString().trim()
+        sb.setLength(0)
+        if (s.length in 2..20) out.add(s)
+    }
+    for (ch in content) {
+        if (ch.isLetterOrDigit()) sb.append(ch) else flush()
+    }
+    flush()
+    return out.take(12)
 }
 
 @Composable

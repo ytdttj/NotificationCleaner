@@ -114,6 +114,9 @@ fun RulesScreen(
     var tab by remember { mutableStateOf(0) } // 0=过滤规则 1=白名单
 
     cc.ytdttj.noticleaner.ui.glass.NcScaffold(
+        // 2.3.0 Dev 2：外层 MainScaffold 已应用状态栏 inset，内层必须清零，
+        // 否则顶部 inset 双叠加 → TabRow 上方多出一整块空白（UI 复盘 P1-B）
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
             FloatingActionButton(onClick = {
                 if (tab == 0) onOpenRuleEdit() else {
@@ -126,7 +129,16 @@ fun RulesScreen(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            TabRow(selectedTabIndex = tab) {
+            // 2.3.0 Dev 2：玻璃模式下不再是一条通栏不透明色带（UI 复盘 P1-B），
+            // 容器透明、浮在背景上；M3 模式保持默认的 surface。
+            TabRow(
+                selectedTabIndex = tab,
+                containerColor = if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
+                    androidx.compose.ui.graphics.Color.Transparent
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+            ) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("过滤规则 (${rules.size})") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("白名单 (${whitelist.size})") })
             }
@@ -135,7 +147,16 @@ fun RulesScreen(
                     if (rules.isEmpty()) {
                         EmptyHint("暂无手动规则", "点击右下角 + 新建：选择 APP + 条件组合（8 种匹配方式）")
                     } else {
-                        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)) {
+                        LazyColumn(
+                            Modifier.fillMaxSize(),
+                            // 2.3.0 Dev 2：底栏在 Scaffold 之外，列表底部自行让位
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                start = 12.dp,
+                                top = 12.dp,
+                                end = 12.dp,
+                                bottom = 12.dp + cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance(),
+                            ),
+                        ) {
                             items(rules, key = { it.id }) { rule ->
                                 RuleCard(
                                     rule,
@@ -151,7 +172,15 @@ fun RulesScreen(
                     if (whitelist.isEmpty()) {
                         EmptyHint("白名单为空", "白名单内的 APP 通知不会被 AI 过滤；点击右下角 + 添加")
                     } else {
-                        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)) {
+                        LazyColumn(
+                            Modifier.fillMaxSize(),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                start = 12.dp,
+                                top = 12.dp,
+                                end = 12.dp,
+                                bottom = 12.dp + cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance(),
+                            ),
+                        ) {
                             items(whitelist, key = { it.packageName }) { item ->
                                 WhitelistCard(item, onRemove = { vm.removeWhitelist(item.packageName) })
                             }

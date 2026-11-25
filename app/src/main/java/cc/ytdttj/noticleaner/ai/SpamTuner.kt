@@ -23,6 +23,9 @@ object SpamTuner {
      *        与 [channelKey] **互斥生效**（见 [fit] 的三态判定）：mipush 渠道 ID 动态轮换时
      *        渠道桶失效，App 桶是发件人先验的正确粒度
      * @param weight 样本权重 = 同一通知被重复学习的次数（>3 次大幅提升；拟合时按重复样本计入）
+     * @param structKeys 结构桶（2.3.0 Dev 1，见 [FeatureHasher.structKeysForFocus]）：
+     *        prior 型特征（x=1、不参与 L2），且**只要非空就绕过 [MIN_LENGTH]**——
+     *        `@` 归一化后长度为 0、`详情>>` 只有 2，旧规则会把这些最该学的样本静默丢弃
      */
     data class Sample(
         val text: String,
@@ -30,6 +33,7 @@ object SpamTuner {
         val channelKey: Int = 0,
         val appKey: Int = 0,
         val weight: Int = 1,
+        val structKeys: List<Int> = emptyList(),
     )
 
     /** 归一化后短于此长度的文本不参与拟合（信号太少） */
@@ -117,6 +121,8 @@ object SpamTuner {
         val priorKey: Int,
         val priorIsApp: Boolean,
         val repeats: Int,
+        /** 结构桶：prior 型，每样本只按通知条数计一次（不随重复学习放大） */
+        val structKeys: List<Int>,
     )
 
     fun fit(
@@ -172,6 +178,8 @@ object SpamTuner {
                     for (i in s.keys.indices) z += delta[s.keys[i]] * s.x[i]
                     // 发件人先验独立偏置（x=1，不参与 L2 归一化）：同 App/同渠道的推送性质高度一致
                     if (s.priorKey != 0) z += delta[s.priorKey]
+                    // 结构桶同理：x=1、不参与 L2，避免短而强的模板被长正文稀释
+                    for (k in s.structKeys) z += delta[k]
                     val g = sigmoid(z) - s.y
                     for (i in s.keys.indices) {
                         val k = s.keys[i]
@@ -185,6 +193,14 @@ object SpamTuner {
                     if (s.priorKey != 0 && rep == 0) {
                         val current = delta[s.priorKey]
                         delta[s.priorKey] = current - lr * (g + l2 * current)
+                    }
+                    // 结构桶同样只按通知条数计一次：重复点击表达的是"这一条很确定"，
+                    // 不应把整个 App 的结构先验成倍放大（与渠道桶护栏同一理由）
+                    if (rep == 0) {
+                        for (k in s.structKeys) {
+                            val current = delta[k]
+                            delta[k] = current - lr * (g + l2 * current)
+                        }
                     }
                 }
             }
@@ -222,6 +238,13 @@ object SpamTuner {
             }
             if (capped != v) delta[s.priorKey] = capped
         }
+        // 2.3.0 Dev 1：结构桶逐桶封顶。总和封顶在打分侧做（同一通知命中多个结构桶时
+        // 求和的绝对值 ≤ STRUCT_BIAS_CAP），因为只有打分时才知道哪些桶属于同一条通知。
+        val structKeySet = HashSet<Int>()
+        for (s in prepared) structKeySet.addAll(s.structKeys)
+        for (k in structKeySet) {
+            delta[k] = delta[k].coerceIn(-SpamModel.STRUCT_BIAS_CAP.toFloat(), SpamModel.STRUCT_BIAS_CAP.toFloat())
+        }
         // 稀疏输出：仅非零桶；数组天然升序（与原 HashMap 键排序结果一致），逐位一致
         var count = 0
         for (v in delta) if (v != 0f) count++
@@ -241,14 +264,14 @@ object SpamTuner {
     private fun prepare(base: SpamModel, sample: Sample): Prepared? {
         // 1.3.2（P2-3）：normalize 只做一次——长度校验与计数共用同一归一化结果
         val n = FeatureHasher.normalize(sample.text)
-        if (n.length < MIN_LENGTH) return null
-        // P1-8：'>' 伪特征与打分路径对称（含 '>' 的样本拟合时能看到 GT 桶，
-        // 用户"学为正常"才能对该桶产生负修正、推翻 base 的 '>' 先验）
-        val counts = FeatureHasher.countsOfNormalized(n, FeatureHasher.hasGtMark(sample.text))
-        if (counts.size == 0) return null
+        // 2.3.0 Dev 1：结构样本绕过 MIN_LENGTH——`@` 归一化后为空、`详情>>` 只有 2 个字符，
+        // 恰恰是这类"短而强"的样本最需要进入拟合；structKeys 非空时文本 n-gram 允许为空。
+        if (n.length < MIN_LENGTH && sample.structKeys.isEmpty()) return null
+        val counts = FeatureHasher.countsOfNormalized(n)
+        if (counts.size == 0 && sample.structKeys.isEmpty()) return null
         var sq = 0.0
         counts.forEach { _, c -> sq += c.toDouble() * c }
-        val norm = sqrt(sq).toFloat()
+        val norm = if (sq > 0.0) sqrt(sq).toFloat() else 1f
         val keys = IntArray(counts.size)
         val x = FloatArray(counts.size)
         var z0 = base.bias.toFloat()
@@ -264,6 +287,8 @@ object SpamTuner {
         val priorKey = if (sample.appKey != 0) sample.appKey else sample.channelKey
         val priorIsApp = sample.appKey != 0
         if (priorKey != 0) z0 += base.weights[priorKey]
+        // 结构桶的 base 权重同样计入 z0（新建桶为 0；撞桶时由 delta 自动补偿）
+        for (k in sample.structKeys) z0 += base.weights[k]
         return Prepared(
             z0 = z0,
             y = if (sample.spam) 1f else 0f,
@@ -272,6 +297,7 @@ object SpamTuner {
             priorKey = priorKey,
             priorIsApp = priorIsApp,
             repeats = sample.weight.coerceIn(1, MAX_WEIGHT),
+            structKeys = sample.structKeys,
         )
     }
 

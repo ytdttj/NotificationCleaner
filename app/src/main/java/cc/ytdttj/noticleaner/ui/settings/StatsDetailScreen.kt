@@ -116,15 +116,33 @@ class StatsDetailViewModel(
         _selected.value = n
     }
 
-    /** 单条学习：广告(1) / 正常(0)；同方向重复点击累积权重，随后全量重拟合 */
-    fun learn(n: NotificationEntity, label: Int) {
+    /** 单条学习：广告(1) / 正常(0)；同方向重复点击累积权重，随后全量重拟合。
+     *  2.3.0 Dev 1：[focus] 为浮窗勾选的学习重点（空串 = 整条通知），
+     *  [focusKind] 区分文本关键词（TEXT）与结构模板（STRUCT）。 */
+    fun learn(
+        n: NotificationEntity,
+        label: Int,
+        focus: String? = null,
+        focusKind: String? = null,
+    ) {
         viewModelScope.launch(Dispatchers.Default) {
-            val sameDirection = n.learned && n.learnLabel == label
+            val kind = when {
+                label != 1 -> cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_AUTO
+                focusKind == cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT ->
+                    cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT
+                !focus.isNullOrBlank() -> cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_TEXT
+                else -> cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_AUTO
+            }
+            val learnFocus = if (label == 1) focus.orEmpty().trim() else ""
+            val sameDirection = n.learned && n.learnLabel == label &&
+                n.learnFocus == learnFocus && n.learnFocusKind == kind
             dao.update(
                 n.copy(
                     learned = true,
                     learnLabel = label,
                     learnCount = if (sameDirection) n.learnCount + 1 else 1,
+                    learnFocus = learnFocus,
+                    learnFocusKind = kind,
                     decision = if (label == 1) DECISION_MANUAL_MARKED_AD else DECISION_PASSED,
                 ),
             )
@@ -135,6 +153,9 @@ class StatsDetailViewModel(
             cc.ytdttj.noticleaner.data.LearningHelper.refit(dao, modelRepo)
             _toast.value = when {
                 label == 1 && sameDirection -> "已重复学习广告（第 ${n.learnCount + 1} 次）"
+                label == 1 && kind == cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_STRUCT ->
+                    "已按模板「${cc.ytdttj.noticleaner.ai.FeatureHasher.structComboLabel(learnFocus)}」学习为广告"
+                label == 1 && learnFocus.isNotEmpty() -> "已按所选学习重点学习为广告"
                 label == 1 -> "已学习为广告通知"
                 else -> "已学习为正常通知"
             }
@@ -144,7 +165,15 @@ class StatsDetailViewModel(
     /** 取消学习：从标注集移除后重新拟合，精确回滚 */
     fun unlearn(n: NotificationEntity) {
         viewModelScope.launch(Dispatchers.Default) {
-            dao.update(n.copy(learned = false, learnLabel = -1, learnCount = 0))
+            dao.update(
+                n.copy(
+                    learned = false,
+                    learnLabel = -1,
+                    learnCount = 0,
+                    learnFocus = "",
+                    learnFocusKind = cc.ytdttj.noticleaner.data.db.LEARN_FOCUS_AUTO,
+                ),
+            )
             cc.ytdttj.noticleaner.data.LearningHelper.refit(dao, modelRepo)
             _toast.value = "已取消学习"
         }
@@ -239,16 +268,14 @@ fun StatsDetailScreen(
         )
     }
 
-    // Dev 14：玻璃模式下悬浮底栏在 Scaffold 之外，Snackbar 需上移让位，否则被盖住
-    val snackbarBottomPadding =
-        if (cc.ytdttj.noticleaner.ui.LocalGlassMode.current) {
-            cc.ytdttj.noticleaner.ui.glass.GlassFloatingBarClearance
-        } else {
-            0.dp
-        }
+    // Dev 14：玻璃模式下悬浮底栏在 Scaffold 之外，Snackbar 需上移让位。
+    // 2.3.0 Dev 2：二级页不再渲染底栏，让位高度统一由 helper 给出（无底栏时为 0）
+    val snackbarBottomPadding = cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance()
     val selected by vm.selected.collectAsState()
 
     cc.ytdttj.noticleaner.ui.glass.NcScaffold(
+        // 2.3.0 Dev 2：外层 MainScaffold 已应用 inset，内层清零避免顶部双叠加
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         snackbarHost = {
             Box(Modifier.padding(bottom = snackbarBottomPadding)) { SnackbarHost(snackbar) }
         },
@@ -278,7 +305,15 @@ fun StatsDetailScreen(
                 Text("暂无记录", style = MaterialTheme.typography.titleMedium)
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(12.dp)) {
+            LazyColumn(
+                Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(
+                    start = 12.dp,
+                    top = 12.dp,
+                    end = 12.dp,
+                    bottom = 12.dp + cc.ytdttj.noticleaner.ui.glass.glassFloatingBarClearance(),
+                ),
+            ) {
                 items(items, key = { it.id }) { n ->
                     // Dev 14：条目可点击 → 打开与历史页同款的详情弹层（可重新学习/取消学习）
                     cc.ytdttj.noticleaner.ui.glass.NcCard(
@@ -322,7 +357,7 @@ fun StatsDetailScreen(
                         context, n.packageName, n.channelId,
                     )
                 },
-                onLearn = { label -> vm.learn(n, label) },
+                onLearn = { label, focus, kind -> vm.learn(n, label, focus, kind) },
                 onUnlearn = { vm.unlearn(n) },
             )
         }

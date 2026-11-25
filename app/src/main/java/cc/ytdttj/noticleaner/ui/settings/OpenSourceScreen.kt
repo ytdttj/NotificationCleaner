@@ -40,41 +40,32 @@ private data class OpenSourceProject(
     val name: String,
     val author: String,
     val url: String,
-    val usage: String,
 )
 
 private val PROJECTS = listOf(
     OpenSourceProject(
         "Notice", "Night-stars-1", "https://github.com/Night-stars-1/Notice",
-        "超级岛通知协议与 ML 训练管线参考（训练脚本同源）",
     ),
     OpenSourceProject(
         "HyperIsland", "1812z", "https://github.com/1812z/HyperIsland",
-        "认证绕过思路与 SystemUI 进程内代发（岛代发信任模型）参考",
     ),
     OpenSourceProject(
         "SignalDock", "jizizr", "https://github.com/jizizr/signaldock",
-        "岛通知模板参数与结果岛常驻策略参考",
     ),
     OpenSourceProject(
         "miuix", "compose-miuix-ui", "https://github.com/compose-miuix-ui/miuix",
-        "Compose UI 组件风格参考",
     ),
     OpenSourceProject(
         "Backdrop", "Kyant0", "https://github.com/Kyant0/Backdrop",
-        "液态玻璃背景效果库（界面玻璃质感的核心依赖）",
     ),
     OpenSourceProject(
         "Shapes", "Kyant0", "https://github.com/Kyant0/Shapes",
-        "连续曲率圆角形状组件",
     ),
     OpenSourceProject(
         "libxposed API", "libxposed", "https://github.com/libxposed/api",
-        "LSPosed Modern API（模块端 hook 能力）",
     ),
     OpenSourceProject(
         "Shizuku", "RikkaApps", "https://github.com/RikkaApps/Shizuku",
-        "免 Root shell 通道（保活修复与诊断命令）",
     ),
 )
 
@@ -82,6 +73,8 @@ private val PROJECTS = listOf(
 fun OpenSourceScreen(onBack: () -> Unit = {}) {
     val context = LocalContext.current
     NcScaffold(
+        // 2.3.0 Dev 2：外层 MainScaffold 已应用 inset，内层清零避免顶部双叠加
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         topBar = {
             NcTopAppBar(
                 title = { Text("参考开源项目") },
@@ -97,8 +90,7 @@ fun OpenSourceScreen(onBack: () -> Unit = {}) {
         ) {
             item {
                 Text(
-                    "通知滤盒的诞生离不开以下开源项目——感谢每一位作者的付出。" +
-                        "点击卡片可访问对应的 GitHub 仓库。",
+                    "感谢以下开源项目，点击卡片访问仓库。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -135,8 +127,6 @@ fun OpenSourceScreen(onBack: () -> Unit = {}) {
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
-                        Spacer(Modifier.height(4.dp))
-                        Text(p.usage, style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(4.dp))
                         Text(
                             p.url.removePrefix("https://"),

@@ -156,12 +156,14 @@ internal class FilterEngine {
         // 渠道已在白名单/豁免判定处取过（channel 变量复用，避免重复构建字符串）
         val chKey = if (channel.isNotEmpty()) FeatureHasher.channelKey(pkg, channel) else null
         // vc87：App 先验桶（fit 三态互斥，delta 里至多一个非零）
-        // P1-8：'>' 强抬已删除（与 NLS 同步），语义由模型伪特征桶承载（见 FeatureHasher.GT_KEY）
+        // 2.3.0 Dev 1：结构桶（与 NLS 同步）——`@`/`详情>>` 从原始文本提取，
+        // 按 App 隔离、不参与 L2、base 权重为 0、只由用户标注学习
+        val structKeys = FeatureHasher.structKeysForText(aiText, pkg)
         val p = m.scoreNormalized(
             normalized,
             FeatureHasher.appKey(pkg),
             chKey,
-            hasGt = FeatureHasher.hasGtMark(aiText),
+            structKeys,
         )
         return if (p >= cfg.threshold) {
             Outcome(true, DECISION_FILTERED_BY_AI_MODULE, p.toFloat(), title, joined)

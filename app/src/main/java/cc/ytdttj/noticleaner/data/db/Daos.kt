@@ -126,11 +126,10 @@ interface NotificationDao {
     @Query("DELETE FROM notifications WHERE learned = 0 AND postTime < :cutoff")
     suspend fun purgeOlderThan(cutoff: Long): Int
 
-    /** CSV 导出（Dev 6）：全量历史通知，按时间倒序 */
-    @Query("SELECT * FROM notifications ORDER BY postTime DESC")
-    suspend fun exportAll(): List<NotificationEntity>
-
-    /** 诊断导出（Dev 8）：最近 24 小时的通知历史 */
+    /**
+     * 通知导出（Dev 8 / 2.3.0 Dev 1）：`postTime >= since` 的历史通知，按时间倒序。
+     * 诊断导出与手动 CSV 导出共用，默认窗口 30 天。
+     */
     @Query("SELECT * FROM notifications WHERE postTime >= :since ORDER BY postTime DESC")
     suspend fun listSince(since: Long): List<NotificationEntity>
 

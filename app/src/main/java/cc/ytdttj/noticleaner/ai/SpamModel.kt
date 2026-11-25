@@ -44,11 +44,17 @@ class SpamModel(
      * 带发件人先验的打分（2.2.1 vc87）：App 桶与渠道桶**互斥生效**（fit 三态判定保证
      * delta 里至多一个非零），打分侧把两者都加上即可 —— 至多命中一个。
      */
-    fun score(rawText: String, appKey: Int?, channelKey: Int?): Double {
+    fun score(
+        rawText: String,
+        appKey: Int?,
+        channelKey: Int?,
+        structKeys: List<Int> = emptyList(),
+    ): Double {
         val aw = if (appKey != null && appKey != 0) weights[appKey].toDouble() else 0.0
         val cw = if (channelKey != null && channelKey != 0) weights[channelKey].toDouble() else 0.0
-        if (aw == 0.0 && cw == 0.0) return score(rawText)
-        return scoreWithPriors(FeatureHasher.counts(rawText), aw, cw)
+        val sw = structBias(structKeys)
+        if (aw == 0.0 && cw == 0.0 && sw == 0.0) return score(rawText)
+        return scoreWithPriors(FeatureHasher.counts(rawText), aw, cw, sw)
     }
 
     /**
@@ -59,19 +65,41 @@ class SpamModel(
     fun scoreNormalized(normalizedText: String, channelKey: Int?): Double =
         scoreNormalized(normalizedText, appKey = null, channelKey = channelKey)
 
-    fun scoreNormalized(normalizedText: String, appKey: Int?, channelKey: Int?, hasGt: Boolean = false): Double {
-        val counts = FeatureHasher.countsOfNormalized(normalizedText, hasGt)
+    fun scoreNormalized(
+        normalizedText: String,
+        appKey: Int?,
+        channelKey: Int?,
+        structKeys: List<Int> = emptyList(),
+    ): Double {
+        val counts = FeatureHasher.countsOfNormalized(normalizedText)
         val aw = if (appKey != null && appKey != 0) weights[appKey].toDouble() else 0.0
         val cw = if (channelKey != null && channelKey != 0) weights[channelKey].toDouble() else 0.0
-        if (aw == 0.0 && cw == 0.0) {
+        val sw = structBias(structKeys)
+        if (aw == 0.0 && cw == 0.0 && sw == 0.0) {
             return scoreWithCounts(weights, bias, counts)
         }
-        return scoreWithPriors(counts, aw, cw)
+        return scoreWithPriors(counts, aw, cw, sw)
     }
 
-    /** 发件人先验（App 桶 / 渠道桶，互斥）+ 文本特征打分（先验权重不计入 L2 归一化，避免被稀释） */
-    private fun scoreWithPriors(counts: FeatureCounts, appWeight: Double, channelWeight: Double): Double {
-        var z = bias + appWeight + channelWeight
+    /**
+     * 结构桶偏置（2.3.0 Dev 1）：prior 型，x=1、不参与文本 L2；
+     * 同一通知命中的多个结构桶总和封顶 [STRUCT_BIAS_CAP]，防止多标记叠加失控。
+     */
+    private fun structBias(keys: List<Int>): Double {
+        if (keys.isEmpty()) return 0.0
+        var sum = 0.0
+        for (k in keys) sum += weights[k].toDouble()
+        return sum.coerceIn(-STRUCT_BIAS_CAP, STRUCT_BIAS_CAP)
+    }
+
+    /** 发件人先验（App 桶 / 渠道桶，互斥）+ 结构桶 + 文本特征（先验不计入 L2 归一化，避免被稀释） */
+    private fun scoreWithPriors(
+        counts: FeatureCounts,
+        appWeight: Double,
+        channelWeight: Double,
+        structWeight: Double,
+    ): Double {
+        var z = bias + appWeight + channelWeight + structWeight
         if (counts.size == 0) return sigmoid(z)
         var normSq = 0.0
         counts.forEach { _, c -> normSq += c.toDouble() * c.toDouble() }
@@ -92,6 +120,9 @@ class SpamModel(
 
     companion object {
         const val FORMAT_VERSION = 2
+
+        /** 结构桶偏置上限（log-odds）：与纯先验同量级，可独立助推但不做不可撤销的硬拦截 */
+        const val STRUCT_BIAS_CAP = 8.0
         private val MAGIC = byteArrayOf('N'.code.toByte(), 'S'.code.toByte(), 'P'.code.toByte(), 'M'.code.toByte())
 
         fun load(input: InputStream): SpamModel {

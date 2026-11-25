@@ -101,6 +101,8 @@ fun RuleEditScreen(
     }
 
     cc.ytdttj.noticleaner.ui.glass.NcScaffold(
+        // 2.3.0 Dev 2：外层 MainScaffold 已应用 inset，内层清零避免顶部双叠加
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         topBar = {
             cc.ytdttj.noticleaner.ui.glass.NcTopAppBar(
                 title = { Text("新建规则") },

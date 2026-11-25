@@ -234,6 +234,9 @@ fun MainScaffold() {
         initial = UiTheme.MATERIAL.name,
     )
     val glassMode = UiTheme.from(uiThemeName) == UiTheme.GLASS
+    // 2.3.0 Dev 2：底栏只在三个 tab 顶级页渲染。二级页（统计明细/规则编辑/App 选择/
+    // 开源项目）带底栏既遮挡列表末尾，也和顶栏「返回」的层级冲突（UI 复盘 P1）。
+    val isTabRoute = tabs.any { it.route == currentRoute }
 
     // ---- 1.3.0 beta2：设置 tab 快速点击 5 次 → 解锁通知模拟（隐藏测试功能） ----
     val settingsTaps = remember { mutableListOf<Long>() }
@@ -262,19 +265,35 @@ fun MainScaffold() {
         cc.ytdttj.noticleaner.ui.glass.GlassRoot(
             modifier = Modifier.fillMaxSize(),
             floatingBar = {
-                cc.ytdttj.noticleaner.ui.glass.GlassBottomBar(
-                    items = tabs.map { cc.ytdttj.noticleaner.ui.glass.GlassNavItem(it.route, it.label, it.icon) },
-                    selectedRoute = currentRoute,
-                    onItemClick = ::onTabClick,
-                    modifier = Modifier.align(Alignment.BottomCenter),
-                )
+                if (isTabRoute) {
+                    cc.ytdttj.noticleaner.ui.glass.GlassBottomBar(
+                        items = tabs.map { cc.ytdttj.noticleaner.ui.glass.GlassNavItem(it.route, it.label, it.icon) },
+                        selectedRoute = currentRoute,
+                        onItemClick = ::onTabClick,
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    )
+                }
             },
         ) {
-            Scaffold(
-                containerColor = Color.Transparent,
-                contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
-            ) { padding ->
-                MainNavHost(navController = navController, modifier = Modifier.padding(padding))
+            // 2.3.0 Dev 2：让位高度由页面自行读取（滚动容器 contentPadding），
+            // 这里下发"当前页是否有底栏"；二级页没有底栏，因此不额外让位。
+            androidx.compose.runtime.CompositionLocalProvider(
+                cc.ytdttj.noticleaner.ui.glass.LocalGlassFloatingBarVisible provides isTabRoute,
+            ) {
+                Scaffold(
+                    containerColor = Color.Transparent,
+                    // 有悬浮底栏的 tab 页去掉底部 inset（内容直达屏底）；二级页没有底栏，
+                    // 必须保留底部 inset，否则列表最后一行会压在手势条下。
+                    contentWindowInsets = WindowInsets.systemBars.only(
+                        if (isTabRoute) {
+                            WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                        } else {
+                            WindowInsetsSides.Top + WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+                        },
+                    ),
+                ) { padding ->
+                    MainNavHost(navController = navController, modifier = Modifier.padding(padding))
+                }
             }
         }
     } else {

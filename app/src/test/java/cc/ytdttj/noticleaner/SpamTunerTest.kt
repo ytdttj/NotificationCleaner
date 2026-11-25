@@ -258,4 +258,133 @@ class SpamTunerTest {
             w10 <= w1 * 2f + 0.3f,
         )
     }
+
+    // ==================== 2.3.0 Dev 1：学习重点（只学关键字） ====================
+    // 背景：整条唯一文案只能记住这一条；用户勾选「多条推送里重复出现的部分」后，
+    // 必须能对没见过的新文案产生抬升，否则「学了很多次还是拦不住」。
+
+    @Test
+    fun focusKeywordLearningGeneralizesToUnseenText() {
+        val m = base()
+        val focus = "详情推荐"
+        val merged = m.withDelta(
+            SpamTuner.fit(m, listOf(SpamTuner.Sample(focus, spam = true))),
+        )
+        val unseen = "今天下午的随手记录，拍了几张照片，详情推荐"
+        val before = m.score(unseen)
+        val after = merged.score(unseen)
+        assertTrue(
+            "学习关键字后，包含该关键字的新文案概率应上升（before=$before after=$after）",
+            after > before + 1e-3,
+        )
+    }
+
+    @Test
+    fun wholeTextLearningDoesNotGeneralizeToUnseenText() {
+        // 对照组：只学整条唯一文案时，新文案（不共享 n-gram）几乎不受影响——
+        // 这正是旧行为下用户"学了很多次也没用"的原因。
+        val m = base()
+        val onlyThisOne = "这条推送的具体内容是独一无二的表述甲乙丙丁"
+        val merged = m.withDelta(
+            SpamTuner.fit(m, listOf(SpamTuner.Sample(onlyThisOne, spam = true))),
+        )
+        val unseen = "完全无关的另一段营销文案，标题与正文都不相同"
+        val before = m.score(unseen)
+        val after = merged.score(unseen)
+        assertTrue(
+            "只学整条时新文案不应被显著抬升（before=$before after=$after）",
+            after < before + 0.05,
+        )
+    }
+
+    // ==================== 2.3.0 Dev 1：结构桶（@ / 详情>>） ====================
+    // 背景：归一化必须删除全部符号（语料两侧预处理不对称），`@`/`详情>>` 改由
+    // prior 型结构桶承载，按 App 隔离、base=0、只由用户标注学习。
+
+    private val weibo = "com.sina.weibo"
+
+    private fun comboKeys(pkg: String, vararg marks: String): List<Int> =
+        listOf(FeatureHasher.structComboKey(pkg, marks.toList()))
+
+    @Test
+    fun structComboLearningGeneralizesToUnseenTemplate() {
+        val m = base()
+        val keys = comboKeys(weibo, FeatureHasher.STRUCT_AT, FeatureHasher.STRUCT_DETAIL_GT)
+        val delta = SpamTuner.fit(m, listOf(SpamTuner.Sample("", spam = true, structKeys = keys)))
+        val merged = m.withDelta(delta)
+        val unseen = "@anotheruser\n今天吃了火锅，好开心详情>>"
+        val unseenKeys = FeatureHasher.structKeysForText(unseen, weibo)
+        val before = m.score(unseen, null, null, unseenKeys)
+        val after = merged.score(unseen, null, null, unseenKeys)
+        assertTrue(
+            "学 @+详情>> 后，不同昵称/正文的新模板应被显著抬升（before=$before after=$after）",
+            after > before + 0.2,
+        )
+    }
+
+    @Test
+    fun structComboLearningLeavesRealMentionsUntouched() {
+        val m = base()
+        val keys = comboKeys(weibo, FeatureHasher.STRUCT_AT, FeatureHasher.STRUCT_DETAIL_GT)
+        val merged = m.withDelta(
+            SpamTuner.fit(m, listOf(SpamTuner.Sample("", spam = true, structKeys = keys))),
+        )
+        val real = "@friend\n在吗，晚上一起吃饭"
+        val realKeys = FeatureHasher.structKeysForText(real, weibo)
+        assertEquals(
+            "真人 @（无详情>>）不得被组合桶抬升",
+            m.score(real, null, null, realKeys),
+            merged.score(real, null, null, realKeys),
+            1e-9,
+        )
+    }
+
+    @Test
+    fun structComboIsAppScoped() {
+        val m = base()
+        val keys = comboKeys(weibo, FeatureHasher.STRUCT_AT, FeatureHasher.STRUCT_DETAIL_GT)
+        val merged = m.withDelta(
+            SpamTuner.fit(m, listOf(SpamTuner.Sample("", spam = true, structKeys = keys))),
+        )
+        val text = "@anotheruser\n今天吃了火锅，好开心详情>>"
+        val otherKeys = FeatureHasher.structKeysForText(text, "com.tencent.mm")
+        assertEquals(
+            "其他 App 的同样模板不得共享微博的结构桶",
+            m.score(text, null, null, otherKeys),
+            merged.score(text, null, null, otherKeys),
+            1e-9,
+        )
+    }
+
+    @Test
+    fun structSampleBypassesMinLength() {
+        val m = base()
+        val key = FeatureHasher.structKey(weibo, FeatureHasher.STRUCT_AT)
+        val delta = SpamTuner.fit(m, listOf(SpamTuner.Sample("", spam = true, structKeys = listOf(key))))
+        assertTrue(
+            "结构样本必须绕过 MIN_LENGTH：空文本 + 结构桶也要产生权重（实际 ${deltaAt(delta, key)}）",
+            kotlin.math.abs(deltaAt(delta, key)) > 0.1f,
+        )
+        // 回归：没有结构桶的短文本仍按原规则丢弃
+        val dropped = SpamTuner.fit(m, listOf(SpamTuner.Sample("@详情", spam = true)))
+        assertTrue("无结构桶且归一化 < MIN_LENGTH 的样本应继续被丢弃", dropped.isEmpty)
+    }
+
+    @Test
+    fun structWeightsAreCapped() {
+        val m = base()
+        val keys = listOf(
+            FeatureHasher.STRUCT_AT,
+            FeatureHasher.STRUCT_DETAIL_GT,
+            FeatureHasher.STRUCT_LINK,
+            FeatureHasher.STRUCT_SHARE,
+        ).map { FeatureHasher.structKey(weibo, it) }
+        val delta = SpamTuner.fit(m, listOf(SpamTuner.Sample("", spam = true, structKeys = keys)))
+        for (k in keys) {
+            assertTrue(
+                "结构桶权重应封顶 ±${SpamModel.STRUCT_BIAS_CAP}（实际 ${deltaAt(delta, k)}）",
+                kotlin.math.abs(deltaAt(delta, k)) <= SpamModel.STRUCT_BIAS_CAP + 1e-4f,
+            )
+        }
+    }
 }

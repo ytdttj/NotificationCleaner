@@ -16,6 +16,11 @@ import kotlinx.coroutines.launch
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
+/** 历史通知保留天数：默认 30 天，可调 1~365 天（已学习的标注永不被清理） */
+const val HISTORY_RETENTION_DEFAULT_DAYS = 30
+const val HISTORY_RETENTION_MIN_DAYS = 1
+const val HISTORY_RETENTION_MAX_DAYS = 365
+
 /**
  * 设置（Plan.md §4 / §6.3）：
  * - threshold：过滤阈值 0.5~1.0，默认 0.8
@@ -108,11 +113,18 @@ class SettingsRepository(private val context: Context) {
     // ---- 历史通知保留天数（Dev 6）：监控式滚动，最新的顶掉 N 天前的 ----
     private val keyHistoryRetentionDays = intPreferencesKey("history_retention_days")
 
-    /** 历史通知保留天数（1-90，默认 7）；已学习的标注不受清理影响 */
-    val historyRetentionDays: Flow<Int> = context.dataStore.data.map { it[keyHistoryRetentionDays] ?: 7 }
+    /** 历史通知保留天数（1-365，默认 30）；已学习的标注不受清理影响 */
+    val historyRetentionDays: Flow<Int> = context.dataStore.data.map {
+        it[keyHistoryRetentionDays] ?: HISTORY_RETENTION_DEFAULT_DAYS
+    }
 
     suspend fun setHistoryRetentionDays(value: Int) {
-        context.dataStore.edit { it[keyHistoryRetentionDays] = value.coerceIn(1, 90) }
+        context.dataStore.edit {
+            it[keyHistoryRetentionDays] = value.coerceIn(
+                HISTORY_RETENTION_MIN_DAYS,
+                HISTORY_RETENTION_MAX_DAYS,
+            )
+        }
     }
 
     // ---- 渠道豁免「此渠道不再拦截」（2.2.1 Dev 1）----
